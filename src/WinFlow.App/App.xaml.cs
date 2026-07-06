@@ -1,6 +1,7 @@
 using System.Windows;
 using WinFlow.Core.Abstractions;
 using WinFlow.Core.Audio;
+using WinFlow.Core.Correction;
 using WinFlow.Core.Hotkeys;
 using WinFlow.Core.Injection;
 using WinFlow.Core.Local;
@@ -32,6 +33,7 @@ public partial class App : Application
     private OpenAIRealtimeClient? _realtime;
     private LocalModelManager? _modelManager;
     private SherpaOnnxSttEngine? _localStt;
+    private LlamaCorrectionEngine? _localCorrection;
     private HudController? _hud;
     private TrayIconController? _tray;
 
@@ -102,8 +104,22 @@ public partial class App : Application
             new KeystrokeTextInjector(),
             settings.InputMethod);
 
+        var correctionMode = new CorrectionModeController(settings.CorrectionMode);
+
+        TranscriptCorrectionService? correctionService = null;
+        if (!fakeStt)
+        {
+            var cloudCorrector = new OpenAICorrectionClient(credentials.GetApiKey);
+            _localCorrection = new LlamaCorrectionEngine(_modelManager);
+            var dispatchingCorrector = new DispatchingCorrector(
+                modeController, cloudCorrector, _localCorrection);
+            correctionService = new TranscriptCorrectionService(
+                () => correctionMode.Mode,
+                dispatchingCorrector);
+        }
+
         _pipeline = new DictationPipeline(
-            _hotkeys, _audio, coordinator, streaming, batch, inputRouter);
+            _hotkeys, _audio, coordinator, streaming, batch, inputRouter, correctionService);
 
         var store = new RecordingStore();
         if (saveRecordings)
@@ -125,6 +141,7 @@ public partial class App : Application
         _tray = new TrayIconController(
             coordinator, _pipeline, credentials, store,
             modeController,
+            correctionMode,
             _modelManager,
             settingsStore,
             settings,
@@ -163,6 +180,7 @@ public partial class App : Application
         _audio?.Dispose();
         _realtime?.Dispose();
         _localStt?.Dispose();
+        _localCorrection?.Dispose();
         _modelManager?.Dispose();
         Shutdown();
     }

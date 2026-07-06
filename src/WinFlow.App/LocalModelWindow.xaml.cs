@@ -18,7 +18,7 @@ public partial class LocalModelWindow : Window
     private readonly LocalModelManager _manager;
     private readonly SettingsStore _settingsStore;
     private AppSettings _settings;
-    private readonly LocalModelDescriptor _model = LocalModelCatalog.Default;
+    private readonly LocalModelDescriptor _model;
     private readonly Action? _onInstalledChanged;
     private CancellationTokenSource? _cts;
 
@@ -29,12 +29,14 @@ public partial class LocalModelWindow : Window
         LocalModelManager manager,
         SettingsStore settingsStore,
         AppSettings settings,
+        LocalModelDescriptor? model = null,
         Action? onInstalledChanged = null)
     {
         InitializeComponent();
         _manager = manager;
         _settingsStore = settingsStore;
         _settings = settings;
+        _model = model ?? LocalModelCatalog.Default;
         _onInstalledChanged = onInstalledChanged;
         if (!string.IsNullOrWhiteSpace(_settings.ModelDirectory))
         {
@@ -50,13 +52,23 @@ public partial class LocalModelWindow : Window
         PathText.Text = _manager.ModelDirectory(_model);
         DriveText.Text = DriveSummary();
         DetailLabel.Text = installed
-            ? "Installed. WinFlow will use this model in Local or Auto mode — no API key, fully offline."
-            : "Not installed yet. A free, on-device model (no API key, fully offline).\nDownload is resumable — you can close and resume later.";
+            ? InstalledMessage(_model)
+            : NotInstalledMessage(_model);
         Progress.Visibility = Visibility.Collapsed;
         StatusText.Visibility = Visibility.Collapsed;
         PrimaryButton.Content = installed ? "Remove model" : "Download";
         PrimaryButton.IsEnabled = true;
     }
+
+    private static string InstalledMessage(LocalModelDescriptor model) =>
+        model.Id == LocalModelCatalog.Qwen25CorrectionGguf
+            ? "Installed. WinFlow will use this model when correcting transcripts in Local mode."
+            : "Installed. WinFlow will use this model in Local or Auto mode — no API key, fully offline.";
+
+    private static string NotInstalledMessage(LocalModelDescriptor model) =>
+        model.Id == LocalModelCatalog.Qwen25CorrectionGguf
+            ? "Not installed yet. A free on-device model for fixing grammar and broken English offline.\nDownload is resumable — you can close and resume later."
+            : "Not installed yet. A free, on-device model (no API key, fully offline).\nDownload is resumable — you can close and resume later.";
 
     private string DriveSummary()
     {
@@ -139,7 +151,9 @@ public partial class LocalModelWindow : Window
             RefreshState();
             MessageBox.Show(
                 this,
-                "Offline model installed. Set STT mode to Local (or Auto) from the tray to use it.",
+                _model.Id == LocalModelCatalog.Qwen25CorrectionGguf
+                    ? "Correction model installed. It will be used when transcribing in Local mode with correction enabled."
+                    : "Offline model installed. Set STT mode to Local (or Auto) from the tray to use it.",
                 "WinFlow",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);

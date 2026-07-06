@@ -8,11 +8,6 @@ namespace WinFlow.App;
 
 /// <summary>
 /// Draws simple colored-dot tray icons at runtime until real art exists.
-///
-/// Icons are produced as in-memory .ico files (PNG-compressed, supported
-/// since Vista) rather than via Bitmap.GetHicon, so every <see cref="Icon"/>
-/// constructed from them owns its data outright — no shared GDI handles
-/// that another component's dispose can invalidate behind our back.
 /// </summary>
 public static class TrayIconFactory
 {
@@ -35,16 +30,14 @@ public static class TrayIconFactory
 
         byte[] ico = new byte[6 + 16 + pngBytes.Length];
         Span<byte> header = ico.AsSpan();
-        // ICONDIR: reserved(0), type 1 = icon, count 1
         BinaryPrimitives.WriteUInt16LittleEndian(header[2..], 1);
         BinaryPrimitives.WriteUInt16LittleEndian(header[4..], 1);
-        // ICONDIRENTRY
-        header[6] = size;                                                   // width
-        header[7] = size;                                                   // height
-        BinaryPrimitives.WriteUInt16LittleEndian(header[10..], 1);          // color planes
-        BinaryPrimitives.WriteUInt16LittleEndian(header[12..], 32);         // bits per pixel
+        header[6] = size;
+        header[7] = size;
+        BinaryPrimitives.WriteUInt16LittleEndian(header[10..], 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(header[12..], 32);
         BinaryPrimitives.WriteInt32LittleEndian(header[14..], pngBytes.Length);
-        BinaryPrimitives.WriteInt32LittleEndian(header[18..], 6 + 16);      // image data offset
+        BinaryPrimitives.WriteInt32LittleEndian(header[18..], 6 + 16);
 
         pngBytes.CopyTo(ico.AsSpan(22));
         return ico;

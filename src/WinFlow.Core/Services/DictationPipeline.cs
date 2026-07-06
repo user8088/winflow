@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using WinFlow.Core.Abstractions;
+using WinFlow.Core.Correction;
 using WinFlow.Core.Models;
 
 namespace WinFlow.Core.Services;
@@ -34,6 +35,7 @@ public sealed class DictationPipeline : IDisposable
     private readonly IStreamingSttProvider? _streaming;
     private readonly IBatchSttProvider? _batch;
     private readonly ITextInjector _injector;
+    private readonly TranscriptCorrectionService? _correction;
     private readonly DictationPipelineOptions _options;
 
     // Hotkey events arrive sequentially, but a press can follow a release
@@ -61,6 +63,7 @@ public sealed class DictationPipeline : IDisposable
         IStreamingSttProvider? streaming,
         IBatchSttProvider? batch,
         ITextInjector injector,
+        TranscriptCorrectionService? correction = null,
         DictationPipelineOptions? options = null)
     {
         if (streaming is null && batch is null)
@@ -74,6 +77,7 @@ public sealed class DictationPipeline : IDisposable
         _streaming = streaming;
         _batch = batch;
         _injector = injector;
+        _correction = correction;
         _options = options ?? new DictationPipelineOptions();
 
         _hotkeys.HotkeyChanged += OnHotkeyChanged;
@@ -206,17 +210,21 @@ public sealed class DictationPipeline : IDisposable
                 return; // TranscribeAsync already reported the failure
             }
 
+            string finalText = _correction is not null
+                ? await _correction.ProcessAsync(transcript).ConfigureAwait(false)
+                : transcript;
+
             try
             {
-                await _injector.InjectAsync(transcript).ConfigureAwait(false);
-                DictationCompleted?.Invoke(transcript);
+                await _injector.InjectAsync(finalText).ConfigureAwait(false);
+                DictationCompleted?.Invoke(finalText);
             }
             catch (Exception exception)
             {
                 // Leave the transcript on the clipboard so nothing is lost.
                 try
                 {
-                    Injection.ClipboardHelper.SetText(transcript);
+                    Injection.ClipboardHelper.SetText(finalText);
                 }
                 catch
                 {
@@ -225,7 +233,7 @@ public sealed class DictationPipeline : IDisposable
                 DictationFailed?.Invoke(new DictationFailure(
                     DictationFailureKind.InjectionFailed,
                     $"Couldn't paste ({exception.GetBaseException().Message}). Text is on the clipboard — press Ctrl+V.",
-                    transcript));
+                    finalText));
             }
         }
         finally

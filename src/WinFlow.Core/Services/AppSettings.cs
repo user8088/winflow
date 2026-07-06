@@ -20,4 +20,7 @@ public sealed record AppSettings
 
     /// <summary>How text is delivered to the focused app (Auto detects terminals).</summary>
     public InputMethod InputMethod { get; init; } = InputMethod.Auto;
+
+    /// <summary>How dictated transcripts are cleaned up before injection.</summary>
+    public CorrectionMode CorrectionMode { get; init; } = CorrectionMode.AutoCorrect;
 }

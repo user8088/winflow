@@ -1,6 +1,8 @@
 using NSubstitute;
 using NSubstitute.ExceptionExtensions;
 using WinFlow.Core.Abstractions;
+using WinFlow.Core.Correction;
+using WinFlow.Core.Mocks;
 using WinFlow.Core.Models;
 using WinFlow.Core.Services;
 
@@ -34,6 +36,7 @@ public class DictationPipelineTests
     private DictationPipeline CreatePipeline(
         IStreamingSttProvider? streaming = null,
         IBatchSttProvider? batch = null,
+        TranscriptCorrectionService? correction = null,
         DictationPipelineOptions? options = null)
     {
         return new DictationPipeline(
@@ -41,6 +44,7 @@ public class DictationPipelineTests
             streaming ?? _streaming,
             batch ?? _batch,
             _injector,
+            correction,
             options);
     }
 
@@ -182,7 +186,7 @@ public class DictationPipelineTests
             .Returns("batch only");
 
         using var pipeline = new DictationPipeline(
-            _hotkeys, _audio, _coordinator, streaming: null, _batch, _injector);
+            _hotkeys, _audio, _coordinator, streaming: null, _batch, _injector, correction: null);
         string? completed = null;
         pipeline.DictationCompleted += text => completed = text;
 
@@ -219,10 +223,28 @@ public class DictationPipelineTests
     }
 
     [Fact]
+    public async Task CorrectedTranscriptIsInjected()
+    {
+        _session.FinishAsync(Arg.Any<CancellationToken>()).Returns("um hello world");
+        var correction = new TranscriptCorrectionService(
+            () => CorrectionMode.Aggressive,
+            new FakeCorrector());
+
+        using var pipeline = CreatePipeline(correction: correction);
+        string? completed = null;
+        pipeline.DictationCompleted += text => completed = text;
+
+        await RunFullSessionAsync(pipeline);
+
+        Assert.Equal("[fixed] um hello world", completed);
+        await _injector.Received(1).InjectAsync("[fixed] um hello world", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task RequiresAtLeastOneProvider()
     {
         Assert.Throws<ArgumentException>(() => new DictationPipeline(
-            _hotkeys, _audio, _coordinator, streaming: null, batch: null, _injector));
+            _hotkeys, _audio, _coordinator, streaming: null, batch: null, _injector, correction: null));
         await Task.CompletedTask;
     }
 

@@ -11,7 +11,6 @@ namespace WinFlow.App;
 /// Borderless, non-activating, click-through overlay pinned above the
 /// bottom-center of the work area. Shows a live waveform while recording,
 /// a processing indicator after key release, and a brief result flash.
-/// It never takes focus — focus must stay in the app receiving the text.
 /// </summary>
 public partial class HudWindow : Window
 {
@@ -111,8 +110,6 @@ public partial class HudWindow : Window
 
     private void AdvanceWaveform()
     {
-        // Scroll the history left and append the newest level, so the
-        // bars read as a moving waveform rather than a symmetric meter.
         Array.Copy(_levelHistory, 1, _levelHistory, 0, BarCount - 1);
         _levelHistory[BarCount - 1] = Math.Clamp(_latestLevel * 6.0, 0.0, 1.0);
 
@@ -134,9 +131,7 @@ public partial class HudWindow : Window
     {
         base.OnSourceInitialized(e);
 
-        // WS_EX_NOACTIVATE: never steal focus. WS_EX_TRANSPARENT: clicks
-        // pass through. WS_EX_TOOLWINDOW: no Alt-Tab entry.
-        var handle = new WindowInteropHelper(this).Handle;
+        nint handle = new WindowInteropHelper(this).Handle;
         int exStyle = GetWindowLong(handle, GwlExstyle);
         SetWindowLong(handle, GwlExstyle, exStyle | WsExNoactivate | WsExTransparent | WsExToolwindow);
     }

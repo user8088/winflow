@@ -14,18 +14,13 @@ using WinFlow.Core.Services;
 namespace WinFlow.App;
 
 /// <summary>
-/// Owns the system tray icon: reflects the recording state (gray idle,
-/// red recording, amber processing), surfaces failures as toasts, and
-/// hosts the context menu (API key management, recordings, exit).
+/// Owns the system tray icon: reflects the recording state, surfaces failures
+/// as toasts, and hosts the context menu.
 /// </summary>
 public sealed class TrayIconController : IDisposable
 {
     private readonly TaskbarIcon _trayIcon;
 
-    // Icon *bytes* are cached; a fresh Icon is minted per state change and
-    // the previous one disposed after handoff. Caching Icon instances is
-    // unsafe: swapping them through TaskbarIcon can leave a cached icon
-    // disposed, and reusing it later crashes with ObjectDisposedException.
     private readonly byte[] _idleIco = TrayIconFactory.CreateIcoBytes(System.Drawing.Color.Gray);
     private readonly byte[] _recordingIco = TrayIconFactory.CreateIcoBytes(System.Drawing.Color.Crimson);
     private readonly byte[] _processingIco = TrayIconFactory.CreateIcoBytes(System.Drawing.Color.Orange);
@@ -33,6 +28,7 @@ public sealed class TrayIconController : IDisposable
     private System.Drawing.Icon? _currentIcon;
 
     private readonly SttModeController _mode;
+    private readonly CorrectionModeController _correctionMode;
     private readonly LocalModelManager _modelManager;
     private readonly SettingsStore _settingsStore;
     private readonly InputMethodRouter _inputRouter;
@@ -43,6 +39,9 @@ public sealed class TrayIconController : IDisposable
     private readonly MenuItem _pasteItem;
     private readonly MenuItem _typeItem;
     private readonly MenuItem _autoInputItem;
+    private readonly MenuItem _correctionOffItem;
+    private readonly MenuItem _correctionAutoItem;
+    private readonly MenuItem _correctionAggressiveItem;
 
     public TrayIconController(
         RecordingCoordinator coordinator,
@@ -50,6 +49,7 @@ public sealed class TrayIconController : IDisposable
         ICredentialStore credentials,
         RecordingStore store,
         SttModeController mode,
+        CorrectionModeController correctionMode,
         LocalModelManager modelManager,
         SettingsStore settingsStore,
         AppSettings settings,
@@ -57,10 +57,12 @@ public sealed class TrayIconController : IDisposable
         Action onExit)
     {
         _mode = mode;
+        _correctionMode = correctionMode;
         _modelManager = modelManager;
         _settingsStore = settingsStore;
         _settings = settings;
         _inputRouter = inputRouter;
+
         var menu = new ContextMenu();
 
         var setKey = new MenuItem { Header = "Set OpenAI API key…" };
@@ -71,11 +73,21 @@ public sealed class TrayIconController : IDisposable
         offline.Click += (_, _) =>
         {
             var window = new LocalModelWindow(
-                _modelManager, _settingsStore, _settings, RefreshLocalEnabled);
+                _modelManager, _settingsStore, _settings, onInstalledChanged: RefreshLocalEnabled);
             window.ShowDialog();
-            _settings = window.Settings; // pick up any location change
+            _settings = window.Settings;
         };
         menu.Items.Add(offline);
+
+        var correctionModel = new MenuItem { Header = "Correction model…" };
+        correctionModel.Click += (_, _) =>
+        {
+            var window = new LocalModelWindow(
+                _modelManager, _settingsStore, _settings, LocalModelCatalog.Qwen25Correction);
+            window.ShowDialog();
+            _settings = window.Settings;
+        };
+        menu.Items.Add(correctionModel);
 
         menu.Items.Add(new Separator());
 
@@ -103,6 +115,18 @@ public sealed class TrayIconController : IDisposable
         inputMenu.Items.Add(_autoInputItem);
         menu.Items.Add(inputMenu);
 
+        var correctionMenu = new MenuItem { Header = "Transcript correction" };
+        _correctionOffItem = new MenuItem { Header = "Off (verbatim)", IsCheckable = true };
+        _correctionOffItem.Click += (_, _) => SetCorrectionMode(CorrectionMode.Off);
+        _correctionAutoItem = new MenuItem { Header = "Auto-correct", IsCheckable = true };
+        _correctionAutoItem.Click += (_, _) => SetCorrectionMode(CorrectionMode.AutoCorrect);
+        _correctionAggressiveItem = new MenuItem { Header = "Aggressive", IsCheckable = true };
+        _correctionAggressiveItem.Click += (_, _) => SetCorrectionMode(CorrectionMode.Aggressive);
+        correctionMenu.Items.Add(_correctionOffItem);
+        correctionMenu.Items.Add(_correctionAutoItem);
+        correctionMenu.Items.Add(_correctionAggressiveItem);
+        menu.Items.Add(correctionMenu);
+
         menu.Items.Add(new Separator());
 
         var openRecordings = new MenuItem { Header = "Open recordings folder" };
@@ -122,6 +146,7 @@ public sealed class TrayIconController : IDisposable
         RefreshModeChecks();
         RefreshLocalEnabled();
         RefreshInputChecks();
+        RefreshCorrectionChecks();
 
         _currentIcon = TrayIconFactory.CreateIcon(_idleIco);
         _trayIcon = new TaskbarIcon
@@ -136,10 +161,6 @@ public sealed class TrayIconController : IDisposable
         pipeline.DictationFailed += failure => RunOnUiThread(() => OnDictationFailed(failure));
     }
 
-    /// <summary>
-    /// First-launch feedback: the app has no window, so without this a
-    /// user who double-clicks the exe sees nothing happen at all.
-    /// </summary>
     public void ShowWelcome(bool hasApiKey, bool localAvailable)
     {
         string tip = localAvailable
@@ -213,6 +234,22 @@ public sealed class TrayIconController : IDisposable
         RefreshInputChecks();
     }
 
+    private void SetCorrectionMode(CorrectionMode mode)
+    {
+        _correctionMode.Mode = mode;
+        _settings = _settings with { CorrectionMode = mode };
+        _settingsStore.Save(_settings);
+        RefreshCorrectionChecks();
+    }
+
+    private void RefreshCorrectionChecks()
+    {
+        CorrectionMode mode = _correctionMode.Mode;
+        _correctionOffItem.IsChecked = mode == CorrectionMode.Off;
+        _correctionAutoItem.IsChecked = mode == CorrectionMode.AutoCorrect;
+        _correctionAggressiveItem.IsChecked = mode == CorrectionMode.Aggressive;
+    }
+
     private void RefreshInputChecks()
     {
         InputMethod method = _inputRouter.Method;
@@ -225,7 +262,7 @@ public sealed class TrayIconController : IDisposable
     {
         if (failure.Kind == DictationFailureKind.NoSpeech)
         {
-            return; // the HUD quietly dismisses; a toast would be noise
+            return;
         }
 
         _trayIcon.ShowNotification("WinFlow", failure.Message, NotificationIcon.Warning);

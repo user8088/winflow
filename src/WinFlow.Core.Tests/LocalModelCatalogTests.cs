@@ -51,6 +51,18 @@ public class LocalModelCatalogTests
     }
 
     [Fact]
+    public void QwenCorrectionHasPinnedSizeAndHash()
+    {
+        LocalModelDescriptor model = LocalModelCatalog.Qwen25Correction;
+
+        Assert.Equal(491400032, model.TotalBytes);
+        Assert.Single(model.Files);
+        Assert.Equal(64, model.Files[0].Sha256!.Length);
+        Assert.Equal(model.Files.Sum(f => f.Size), model.TotalBytes);
+        Assert.Equal(LocalModelCatalog.Qwen25Correction, LocalModelCatalog.Find(LocalModelCatalog.Qwen25CorrectionGguf));
+    }
+
+    [Fact]
     public void FindResolvesKnownId()
     {
         Assert.Equal(
