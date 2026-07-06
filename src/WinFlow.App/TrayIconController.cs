@@ -66,6 +66,18 @@ public sealed class TrayIconController : IDisposable
         controller.CaptureFailed += exception => RunOnUiThread(() => OnCaptureFailed(exception));
     }
 
+    /// <summary>
+    /// First-launch feedback: the app has no window, so without this a
+    /// user who double-clicks the exe sees nothing happen at all.
+    /// </summary>
+    public void ShowWelcome()
+    {
+        _trayIcon.ShowNotification(
+            "WinFlow is running",
+            "Hold Right Ctrl to record, release to save.\nFind the gray dot in the system tray (check the ^ overflow area).",
+            NotificationIcon.Info);
+    }
+
     private void UpdateState(RecordingState state)
     {
         (byte[] ico, string toolTip) = state switch

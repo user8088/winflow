@@ -11,6 +11,7 @@ namespace WinFlow.App;
 /// </summary>
 public partial class App : Application
 {
+    private Mutex? _singleInstanceMutex;
     private LowLevelKeyboardHookProvider? _hotkeys;
     private WasapiAudioProvider? _audio;
     private CaptureSessionController? _controller;
@@ -19,6 +20,19 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        _singleInstanceMutex = new Mutex(initiallyOwned: true, @"Local\WinFlow.App", out bool isFirstInstance);
+        if (!isFirstInstance)
+        {
+            MessageBox.Show(
+                "WinFlow is already running.\n\nLook for the gray dot in the system tray " +
+                "(you may need to click the ^ overflow arrow next to the clock).",
+                "WinFlow",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            Shutdown();
+            return;
+        }
 
         // WINFLOW_ALLOW_INJECTED=1 lets automated tests drive the hotkey via
         // SendInput; real installs must ignore synthetic keys so our own
@@ -36,6 +50,7 @@ public partial class App : Application
         try
         {
             _hotkeys.Start();
+            _tray.ShowWelcome();
         }
         catch (Exception exception)
         {
