@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using H.NotifyIcon;
 using H.NotifyIcon.Core;
 using WinFlow.Core.Abstractions;
+using WinFlow.Core.Injection;
 using WinFlow.Core.Local;
 using WinFlow.Core.Local.Models;
 using WinFlow.Core.Models;
@@ -34,10 +35,14 @@ public sealed class TrayIconController : IDisposable
     private readonly SttModeController _mode;
     private readonly LocalModelManager _modelManager;
     private readonly SettingsStore _settingsStore;
+    private readonly InputMethodRouter _inputRouter;
     private AppSettings _settings;
     private readonly MenuItem _cloudItem;
     private readonly MenuItem _localItem;
     private readonly MenuItem _autoItem;
+    private readonly MenuItem _pasteItem;
+    private readonly MenuItem _typeItem;
+    private readonly MenuItem _autoInputItem;
 
     public TrayIconController(
         RecordingCoordinator coordinator,
@@ -48,12 +53,14 @@ public sealed class TrayIconController : IDisposable
         LocalModelManager modelManager,
         SettingsStore settingsStore,
         AppSettings settings,
+        InputMethodRouter inputRouter,
         Action onExit)
     {
         _mode = mode;
         _modelManager = modelManager;
         _settingsStore = settingsStore;
         _settings = settings;
+        _inputRouter = inputRouter;
         var menu = new ContextMenu();
 
         var setKey = new MenuItem { Header = "Set OpenAI API key…" };
@@ -84,6 +91,18 @@ public sealed class TrayIconController : IDisposable
         modeMenu.Items.Add(_autoItem);
         menu.Items.Add(modeMenu);
 
+        var inputMenu = new MenuItem { Header = "Input method" };
+        _pasteItem = new MenuItem { Header = "Paste (Ctrl+V)", IsCheckable = true };
+        _pasteItem.Click += (_, _) => SetInputMethod(InputMethod.Paste);
+        _typeItem = new MenuItem { Header = "Type (best for terminals/Cursor)", IsCheckable = true };
+        _typeItem.Click += (_, _) => SetInputMethod(InputMethod.Type);
+        _autoInputItem = new MenuItem { Header = "Auto (detect terminals)", IsCheckable = true };
+        _autoInputItem.Click += (_, _) => SetInputMethod(InputMethod.Auto);
+        inputMenu.Items.Add(_pasteItem);
+        inputMenu.Items.Add(_typeItem);
+        inputMenu.Items.Add(_autoInputItem);
+        menu.Items.Add(inputMenu);
+
         menu.Items.Add(new Separator());
 
         var openRecordings = new MenuItem { Header = "Open recordings folder" };
@@ -102,6 +121,7 @@ public sealed class TrayIconController : IDisposable
 
         RefreshModeChecks();
         RefreshLocalEnabled();
+        RefreshInputChecks();
 
         _currentIcon = TrayIconFactory.CreateIcon(_idleIco);
         _trayIcon = new TaskbarIcon
@@ -183,6 +203,22 @@ public sealed class TrayIconController : IDisposable
         _localItem.IsEnabled = installed;
         _autoItem.Header = installed ? "Auto" : "Auto (downloads offline model to enable Local)";
         _mode.NotifyLocalAvailabilityChanged();
+    }
+
+    private void SetInputMethod(InputMethod method)
+    {
+        _inputRouter.Method = method;
+        _settings = _settings with { InputMethod = method };
+        _settingsStore.Save(_settings);
+        RefreshInputChecks();
+    }
+
+    private void RefreshInputChecks()
+    {
+        InputMethod method = _inputRouter.Method;
+        _pasteItem.IsChecked = method == InputMethod.Paste;
+        _typeItem.IsChecked = method == InputMethod.Type;
+        _autoInputItem.IsChecked = method == InputMethod.Auto;
     }
 
     private void OnDictationFailed(DictationFailure failure)

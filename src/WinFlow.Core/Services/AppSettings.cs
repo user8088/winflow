@@ -17,4 +17,7 @@ public sealed record AppSettings
     /// Let the user choose via the UI rather than relying on an env var.
     /// </summary>
     public string? ModelDirectory { get; init; }
+
+    /// <summary>How text is delivered to the focused app (Auto detects terminals).</summary>
+    public InputMethod InputMethod { get; init; } = InputMethod.Auto;
 }

@@ -97,8 +97,13 @@ public partial class App : Application
             batch = dispatching;
         }
 
+        var inputRouter = new InputMethodRouter(
+            new ClipboardTextInjector(),
+            new KeystrokeTextInjector(),
+            settings.InputMethod);
+
         _pipeline = new DictationPipeline(
-            _hotkeys, _audio, coordinator, streaming, batch, new ClipboardTextInjector());
+            _hotkeys, _audio, coordinator, streaming, batch, inputRouter);
 
         var store = new RecordingStore();
         if (saveRecordings)
@@ -123,6 +128,7 @@ public partial class App : Application
             _modelManager,
             settingsStore,
             settings,
+            inputRouter,
             ExitApplication);
 
         if (!fakeStt && hasApiKey)
