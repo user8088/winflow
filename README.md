@@ -4,8 +4,6 @@
 
 WinFlow is a Windows-native push-to-talk dictation app inspired by [freeflow](https://github.com/mrinalwadhwa/freeflow). It runs in the system tray, captures your voice while you hold **Right Ctrl**, transcribes it with either OpenAI (cloud) or an on-device model (offline), and pastes the result into whatever app has focus — Notepad, VS Code, browsers, terminals, Slack, and more.
 
-![WinFlow offline model download](image.png)
-
 ## Features
 
 - **Push-to-talk** — Hold Right Ctrl to record; release to transcribe and inject text
