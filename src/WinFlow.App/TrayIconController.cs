@@ -5,6 +5,8 @@ using System.Windows.Controls;
 using H.NotifyIcon;
 using H.NotifyIcon.Core;
 using WinFlow.Core.Abstractions;
+using WinFlow.Core.Local;
+using WinFlow.Core.Local.Models;
 using WinFlow.Core.Models;
 using WinFlow.Core.Services;
 
@@ -26,20 +28,50 @@ public sealed class TrayIconController : IDisposable
     private readonly byte[] _idleIco = TrayIconFactory.CreateIcoBytes(System.Drawing.Color.Gray);
     private readonly byte[] _recordingIco = TrayIconFactory.CreateIcoBytes(System.Drawing.Color.Crimson);
     private readonly byte[] _processingIco = TrayIconFactory.CreateIcoBytes(System.Drawing.Color.Orange);
+    private readonly byte[] _localIco = TrayIconFactory.CreateIcoBytes(System.Drawing.Color.MediumSeaGreen);
     private System.Drawing.Icon? _currentIcon;
+
+    private readonly SttModeController _mode;
+    private readonly LocalModelManager _modelManager;
+    private readonly MenuItem _cloudItem;
+    private readonly MenuItem _localItem;
+    private readonly MenuItem _autoItem;
 
     public TrayIconController(
         RecordingCoordinator coordinator,
         DictationPipeline pipeline,
         ICredentialStore credentials,
         RecordingStore store,
+        SttModeController mode,
+        LocalModelManager modelManager,
         Action onExit)
     {
+        _mode = mode;
+        _modelManager = modelManager;
         var menu = new ContextMenu();
 
         var setKey = new MenuItem { Header = "Set OpenAI API key…" };
         setKey.Click += (_, _) => new ApiKeyDialog(credentials).ShowDialog();
         menu.Items.Add(setKey);
+
+        var offline = new MenuItem { Header = "Offline model…" };
+        offline.Click += (_, _) =>
+            new LocalModelWindow(_modelManager, RefreshLocalEnabled).ShowDialog();
+        menu.Items.Add(offline);
+
+        menu.Items.Add(new Separator());
+
+        var modeMenu = new MenuItem { Header = "Transcription mode" };
+        _cloudItem = new MenuItem { Header = "Cloud (OpenAI)", IsCheckable = true };
+        _cloudItem.Click += (_, _) => SetMode(SttMode.Cloud);
+        _localItem = new MenuItem { Header = "Local (offline, free)", IsCheckable = true };
+        _localItem.Click += (_, _) => SetMode(SttMode.Local);
+        _autoItem = new MenuItem { Header = "Auto", IsCheckable = true };
+        _autoItem.Click += (_, _) => SetMode(SttMode.Auto);
+        modeMenu.Items.Add(_cloudItem);
+        modeMenu.Items.Add(_localItem);
+        modeMenu.Items.Add(_autoItem);
+        menu.Items.Add(modeMenu);
 
         menu.Items.Add(new Separator());
 
@@ -56,6 +88,9 @@ public sealed class TrayIconController : IDisposable
         var exit = new MenuItem { Header = "Exit" };
         exit.Click += (_, _) => onExit();
         menu.Items.Add(exit);
+
+        RefreshModeChecks();
+        RefreshLocalEnabled();
 
         _currentIcon = TrayIconFactory.CreateIcon(_idleIco);
         _trayIcon = new TaskbarIcon
@@ -74,23 +109,28 @@ public sealed class TrayIconController : IDisposable
     /// First-launch feedback: the app has no window, so without this a
     /// user who double-clicks the exe sees nothing happen at all.
     /// </summary>
-    public void ShowWelcome(bool hasApiKey)
+    public void ShowWelcome(bool hasApiKey, bool localAvailable)
     {
-        _trayIcon.ShowNotification(
-            "WinFlow is running",
-            hasApiKey
+        string tip = localAvailable
+            ? "Hold Right Ctrl, speak, release — text appears at your cursor. (Using the offline model.)"
+            : hasApiKey
                 ? "Hold Right Ctrl, speak, release — text appears at your cursor."
-                : "Set your OpenAI API key first: right-click the WinFlow tray dot → Set OpenAI API key.",
-            NotificationIcon.Info);
+                : "Add an OpenAI API key, or download the free offline model: right-click the tray dot.";
+        _trayIcon.ShowNotification("WinFlow is running", tip, NotificationIcon.Info);
     }
 
     private void UpdateState(RecordingState state)
     {
+        bool local = _mode.ResolvedBackend == SttBackend.Local;
+        byte[] idle = local ? _localIco : _idleIco;
+
         (byte[] ico, string toolTip) = state switch
         {
             RecordingState.Recording => (_recordingIco, "WinFlow — recording… release Right Ctrl to finish"),
             RecordingState.Processing => (_processingIco, "WinFlow — transcribing…"),
-            _ => (_idleIco, "WinFlow — hold Right Ctrl to dictate"),
+            _ => (idle, local
+                ? "WinFlow — Local mode (offline) · hold Right Ctrl to dictate"
+                : "WinFlow — hold Right Ctrl to dictate"),
         };
 
         System.Drawing.Icon? previous = _currentIcon;
@@ -98,6 +138,40 @@ public sealed class TrayIconController : IDisposable
         _trayIcon.Icon = _currentIcon;
         _trayIcon.ToolTipText = toolTip;
         previous?.Dispose();
+    }
+
+    private void SetMode(SttMode mode)
+    {
+        if (mode == SttMode.Local && !_modelManager.IsInstalled(LocalModelCatalog.Default))
+        {
+            MessageBox.Show(
+                "No offline model installed yet. Use 'Offline model…' to download it first.",
+                "WinFlow",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            RefreshModeChecks();
+            return;
+        }
+
+        _mode.Apply(mode);
+        RefreshModeChecks();
+        UpdateState(RecordingState.Idle);
+    }
+
+    private void RefreshModeChecks()
+    {
+        SttMode configured = _mode.ConfiguredMode;
+        _cloudItem.IsChecked = configured == SttMode.Cloud;
+        _localItem.IsChecked = configured == SttMode.Local;
+        _autoItem.IsChecked = configured == SttMode.Auto;
+    }
+
+    private void RefreshLocalEnabled()
+    {
+        bool installed = _modelManager.IsInstalled(LocalModelCatalog.Default);
+        _localItem.IsEnabled = installed;
+        _autoItem.Header = installed ? "Auto" : "Auto (downloads offline model to enable Local)";
+        _mode.NotifyLocalAvailabilityChanged();
     }
 
     private void OnDictationFailed(DictationFailure failure)
