@@ -33,6 +33,8 @@ public sealed class TrayIconController : IDisposable
 
     private readonly SttModeController _mode;
     private readonly LocalModelManager _modelManager;
+    private readonly SettingsStore _settingsStore;
+    private AppSettings _settings;
     private readonly MenuItem _cloudItem;
     private readonly MenuItem _localItem;
     private readonly MenuItem _autoItem;
@@ -44,10 +46,14 @@ public sealed class TrayIconController : IDisposable
         RecordingStore store,
         SttModeController mode,
         LocalModelManager modelManager,
+        SettingsStore settingsStore,
+        AppSettings settings,
         Action onExit)
     {
         _mode = mode;
         _modelManager = modelManager;
+        _settingsStore = settingsStore;
+        _settings = settings;
         var menu = new ContextMenu();
 
         var setKey = new MenuItem { Header = "Set OpenAI API key…" };
@@ -56,7 +62,12 @@ public sealed class TrayIconController : IDisposable
 
         var offline = new MenuItem { Header = "Offline model…" };
         offline.Click += (_, _) =>
-            new LocalModelWindow(_modelManager, RefreshLocalEnabled).ShowDialog();
+        {
+            var window = new LocalModelWindow(
+                _modelManager, _settingsStore, _settings, RefreshLocalEnabled);
+            window.ShowDialog();
+            _settings = window.Settings; // pick up any location change
+        };
         menu.Items.Add(offline);
 
         menu.Items.Add(new Separator());

@@ -16,18 +16,56 @@ namespace WinFlow.Core.Local;
 /// </summary>
 public sealed class LocalModelManager : IDisposable
 {
-    public string ModelsRoot { get; }
+    public string ModelsRoot { get; private set; }
 
     public LocalModelManager(string? root = null)
     {
-        // Models run hundreds of MB and shouldn't be forced onto the system
-        // drive. Allow an explicit override, else WINFLOW_MODELS_DIR, else the
-        // default %LOCALAPPDATA%\WinFlow\models.
-        ModelsRoot = root
-            ?? Environment.GetEnvironmentVariable("WINFLOW_MODELS_DIR")
+        // Priority: explicit root, then the persisted setting is applied by the
+        // app via UseRoot, then WINFLOW_MODELS_DIR, then the default.
+        ModelsRoot = ResolveRoot(root);
+    }
+
+    /// <summary>Switches the model store at runtime (e.g. from a folder picker).</summary>
+    public void UseRoot(string root)
+    {
+        if (!string.IsNullOrWhiteSpace(root))
+        {
+            ModelsRoot = ResolveRoot(root);
+        }
+    }
+
+    private static string ResolveRoot(string? root)
+    {
+        if (!string.IsNullOrWhiteSpace(root))
+        {
+            return root;
+        }
+
+        // Legacy/env fallback. The app normally pins a persisted path via UseRoot.
+        return Environment.GetEnvironmentVariable("WINFLOW_MODELS_DIR")
             ?? Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "WinFlow", "models");
+    }
+
+    /// <summary>Free bytes on the drive holding <see cref="ModelsRoot"/>, or null if unknown.</summary>
+    public long? GetAvailableBytes()
+    {
+        try
+        {
+            string? root = Path.GetPathRoot(ModelsRoot);
+            if (string.IsNullOrEmpty(root))
+            {
+                return null;
+            }
+
+            var drive = new DriveInfo(root);
+            return drive.IsReady ? drive.AvailableFreeSpace : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static readonly HttpClient Http = new()

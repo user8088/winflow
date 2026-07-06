@@ -1,27 +1,45 @@
 using System.ComponentModel;
+using System.IO;
 using System.Windows;
+using Microsoft.Win32;
 using WinFlow.Core.Local;
 using WinFlow.Core.Local.Models;
+using WinFlow.Core.Services;
 
 namespace WinFlow.App;
 
 /// <summary>
-/// Downloads (or removes) the on-device Parakeet model with a live
-/// progress bar. The download runs on a background task; progress and
-/// completion are marshalled back to the UI thread.
+/// Downloads (or removes) the on-device Parakeet model with a live progress
+/// bar. The user chooses the install location via a folder picker; the choice
+/// is persisted in settings so it sticks across launches without an env var.
 /// </summary>
 public partial class LocalModelWindow : Window
 {
     private readonly LocalModelManager _manager;
+    private readonly SettingsStore _settingsStore;
+    private AppSettings _settings;
     private readonly LocalModelDescriptor _model = LocalModelCatalog.Default;
     private readonly Action? _onInstalledChanged;
     private CancellationTokenSource? _cts;
 
-    public LocalModelWindow(LocalModelManager manager, Action? onInstalledChanged = null)
+    /// <summary>Current settings (may differ from the constructor arg if the user changed the location).</summary>
+    public AppSettings Settings => _settings;
+
+    public LocalModelWindow(
+        LocalModelManager manager,
+        SettingsStore settingsStore,
+        AppSettings settings,
+        Action? onInstalledChanged = null)
     {
         InitializeComponent();
         _manager = manager;
+        _settingsStore = settingsStore;
+        _settings = settings;
         _onInstalledChanged = onInstalledChanged;
+        if (!string.IsNullOrWhiteSpace(_settings.ModelDirectory))
+        {
+            _manager.UseRoot(_settings.ModelDirectory);
+        }
         RefreshState();
     }
 
@@ -29,21 +47,49 @@ public partial class LocalModelWindow : Window
     {
         bool installed = _manager.IsInstalled(_model);
         TitleLabel.Text = _model.DisplayName;
-        DetailText(installed);
+        PathText.Text = _manager.ModelDirectory(_model);
+        DriveText.Text = DriveSummary();
+        DetailLabel.Text = installed
+            ? "Installed. WinFlow will use this model in Local or Auto mode — no API key, fully offline."
+            : "Not installed yet. A free, on-device model (no API key, fully offline).\nDownload is resumable — you can close and resume later.";
         Progress.Visibility = Visibility.Collapsed;
         StatusText.Visibility = Visibility.Collapsed;
         PrimaryButton.Content = installed ? "Remove model" : "Download";
         PrimaryButton.IsEnabled = true;
     }
 
-    private void DetailText(bool installed)
+    private string DriveSummary()
     {
-        double mb = _model.TotalBytes / (1024.0 * 1024.0);
-        string state = installed
-            ? "Installed. WinFlow will use this model in Local or Auto mode — no API key, fully offline."
-            : "Not installed yet. This is a free, on-device model (no API key, fully offline).";
-        DetailLabel.Text = $"{state}\n\nSize: ~{mb:F0} MB · {_model.ModelType}\n" +
-            "Download is resumable — you can close and resume later.";
+        double needMb = _model.TotalBytes / (1020.0 * 1024.0);
+        long? free = _manager.GetAvailableBytes();
+        if (free is long f)
+        {
+            double freeMb = f / (1020.0 * 1024.0);
+            string note = f < _model.TotalBytes ? "  — NOT ENOUGH SPACE on this drive" : "";
+            return $"Free here: {freeMb:F0} MB · needs ~{needMb:F0} MB{note}";
+        }
+
+        return $"Needs ~{needMb:F0} MB";
+    }
+
+    private void OnChangeLocation(object sender, RoutedEventArgs e)
+    {
+        var picker = new OpenFolderDialog
+        {
+            Title = "Choose where to store the WinFlow offline model",
+            InitialDirectory = _manager.ModelDirectory(_model),
+        };
+
+        if (picker.ShowDialog() != true)
+        {
+            return;
+        }
+
+        string chosen = picker.FolderName;
+        _manager.UseRoot(chosen);
+        _settings = _settings with { ModelDirectory = chosen };
+        _settingsStore.Save(_settings);
+        RefreshState();
     }
 
     private async void OnPrimary(object sender, RoutedEventArgs e)
@@ -62,6 +108,17 @@ public partial class LocalModelWindow : Window
             }
 
             RefreshState();
+            return;
+        }
+
+        if (_manager.GetAvailableBytes() is long free && free < _model.TotalBytes)
+        {
+            MessageBox.Show(
+                this,
+                "Not enough free space on the chosen drive. Pick another location with Change…",
+                "WinFlow",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
             return;
         }
 

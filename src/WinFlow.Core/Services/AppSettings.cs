@@ -11,4 +11,10 @@ public sealed record AppSettings
     public bool NearFieldMic { get; init; } = true;
 
     public string? Language { get; init; }
+
+    /// <summary>
+    /// Where the on-device model lives. Null = default (%LOCALAPPDATA%\WinFlow\models).
+    /// Let the user choose via the UI rather than relying on an env var.
+    /// </summary>
+    public string? ModelDirectory { get; init; }
 }

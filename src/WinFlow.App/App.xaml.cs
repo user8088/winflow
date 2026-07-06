@@ -64,7 +64,7 @@ public partial class App : Application
         _hotkeys = new LowLevelKeyboardHookProvider(allowInjected: allowInjected);
         _audio = new WasapiAudioProvider();
 
-        _modelManager = new LocalModelManager();
+        _modelManager = new LocalModelManager(settings.ModelDirectory);
 
         bool hasApiKey = !string.IsNullOrEmpty(credentials.GetApiKey());
 
@@ -121,6 +121,8 @@ public partial class App : Application
             coordinator, _pipeline, credentials, store,
             modeController,
             _modelManager,
+            settingsStore,
+            settings,
             ExitApplication);
 
         if (!fakeStt && hasApiKey)
