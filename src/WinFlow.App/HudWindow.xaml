@@ -1,0 +1,25 @@
+<Window x:Class="WinFlow.App.HudWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="240" Height="56"
+        WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True"
+        Background="Transparent" Topmost="True"
+        ShowInTaskbar="False" ShowActivated="False" Focusable="False">
+    <Border CornerRadius="28" Background="#F01E1F24">
+        <Grid>
+            <StackPanel x:Name="BarsPanel"
+                        Orientation="Horizontal"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center" />
+            <TextBlock x:Name="StatusText"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       FontSize="14"
+                       FontWeight="SemiBold"
+                       Foreground="#E8EAED"
+                       Visibility="Collapsed"
+                       TextTrimming="CharacterEllipsis"
+                       Margin="20,0" />
+        </Grid>
+    </Border>
+</Window>

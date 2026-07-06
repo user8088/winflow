@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using H.NotifyIcon;
 using H.NotifyIcon.Core;
+using WinFlow.Core.Abstractions;
 using WinFlow.Core.Models;
 using WinFlow.Core.Services;
 
@@ -11,13 +12,12 @@ namespace WinFlow.App;
 
 /// <summary>
 /// Owns the system tray icon: reflects the recording state (gray idle,
-/// red recording, amber processing), notifies on saved/failed takes, and
-/// hosts the context menu.
+/// red recording, amber processing), surfaces failures as toasts, and
+/// hosts the context menu (API key management, recordings, exit).
 /// </summary>
 public sealed class TrayIconController : IDisposable
 {
     private readonly TaskbarIcon _trayIcon;
-    private readonly RecordingStore _store;
 
     // Icon *bytes* are cached; a fresh Icon is minted per state change and
     // the previous one disposed after handoff. Caching Icon instances is
@@ -30,13 +30,18 @@ public sealed class TrayIconController : IDisposable
 
     public TrayIconController(
         RecordingCoordinator coordinator,
-        CaptureSessionController controller,
+        DictationPipeline pipeline,
+        ICredentialStore credentials,
         RecordingStore store,
         Action onExit)
     {
-        _store = store;
-
         var menu = new ContextMenu();
+
+        var setKey = new MenuItem { Header = "Set OpenAI API key…" };
+        setKey.Click += (_, _) => new ApiKeyDialog(credentials).ShowDialog();
+        menu.Items.Add(setKey);
+
+        menu.Items.Add(new Separator());
 
         var openRecordings = new MenuItem { Header = "Open recordings folder" };
         openRecordings.Click += (_, _) =>
@@ -56,25 +61,26 @@ public sealed class TrayIconController : IDisposable
         _trayIcon = new TaskbarIcon
         {
             Icon = _currentIcon,
-            ToolTipText = "WinFlow — hold Right Ctrl to record",
+            ToolTipText = "WinFlow — hold Right Ctrl to dictate",
             ContextMenu = menu,
         };
         _trayIcon.ForceCreate();
 
         coordinator.StateChanged += state => RunOnUiThread(() => UpdateState(state));
-        controller.CaptureCompleted += captured => RunOnUiThread(() => OnCaptureCompleted(captured));
-        controller.CaptureFailed += exception => RunOnUiThread(() => OnCaptureFailed(exception));
+        pipeline.DictationFailed += failure => RunOnUiThread(() => OnDictationFailed(failure));
     }
 
     /// <summary>
     /// First-launch feedback: the app has no window, so without this a
     /// user who double-clicks the exe sees nothing happen at all.
     /// </summary>
-    public void ShowWelcome()
+    public void ShowWelcome(bool hasApiKey)
     {
         _trayIcon.ShowNotification(
             "WinFlow is running",
-            "Hold Right Ctrl to record, release to save.\nFind the gray dot in the system tray (check the ^ overflow area).",
+            hasApiKey
+                ? "Hold Right Ctrl, speak, release — text appears at your cursor."
+                : "Set your OpenAI API key first: right-click the WinFlow tray dot → Set OpenAI API key.",
             NotificationIcon.Info);
     }
 
@@ -82,9 +88,9 @@ public sealed class TrayIconController : IDisposable
     {
         (byte[] ico, string toolTip) = state switch
         {
-            RecordingState.Recording => (_recordingIco, "WinFlow — recording… release Right Ctrl to stop"),
-            RecordingState.Processing => (_processingIco, "WinFlow — saving…"),
-            _ => (_idleIco, "WinFlow — hold Right Ctrl to record"),
+            RecordingState.Recording => (_recordingIco, "WinFlow — recording… release Right Ctrl to finish"),
+            RecordingState.Processing => (_processingIco, "WinFlow — transcribing…"),
+            _ => (_idleIco, "WinFlow — hold Right Ctrl to dictate"),
         };
 
         System.Drawing.Icon? previous = _currentIcon;
@@ -94,26 +100,14 @@ public sealed class TrayIconController : IDisposable
         previous?.Dispose();
     }
 
-    private void OnCaptureCompleted(CapturedAudio captured)
+    private void OnDictationFailed(DictationFailure failure)
     {
-        if (captured.Duration < TimeSpan.FromMilliseconds(150))
+        if (failure.Kind == DictationFailureKind.NoSpeech)
         {
-            return; // accidental tap, nothing worth keeping
+            return; // the HUD quietly dismisses; a toast would be noise
         }
 
-        string path = _store.Save(captured);
-        _trayIcon.ShowNotification(
-            "Recording saved",
-            $"{captured.Duration.TotalSeconds:F1}s · peak RMS {captured.PeakRms:F4}\n{Path.GetFileName(path)}",
-            NotificationIcon.Info);
-    }
-
-    private void OnCaptureFailed(Exception exception)
-    {
-        _trayIcon.ShowNotification(
-            "Recording failed",
-            exception.GetBaseException().Message,
-            NotificationIcon.Error);
+        _trayIcon.ShowNotification("WinFlow", failure.Message, NotificationIcon.Warning);
     }
 
     private static void RunOnUiThread(Action action)
