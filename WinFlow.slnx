@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WinFlow.App/WinFlow.App.csproj" />
+    <Project Path="src/WinFlow.Core.Tests/WinFlow.Core.Tests.csproj" />
+    <Project Path="src/WinFlow.Core/WinFlow.Core.csproj" />
+  </Folder>
+</Solution>
