@@ -43,9 +43,20 @@ public sealed class LocalModelManager : IDisposable
 
         // Legacy/env fallback. The app normally pins a persisted path via UseRoot.
         return Environment.GetEnvironmentVariable("WINFLOW_MODELS_DIR")
+            ?? BundledModelsRoot()
             ?? Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "WinFlow", "models");
+    }
+
+    /// <summary>
+    /// The installer ships models in a <c>models</c> folder next to the exe,
+    /// so everything lives under the install directory the user picked.
+    /// </summary>
+    private static string? BundledModelsRoot()
+    {
+        string dir = Path.Combine(AppContext.BaseDirectory, "models");
+        return Directory.Exists(dir) ? dir : null;
     }
 
     /// <summary>Free bytes on the drive holding <see cref="ModelsRoot"/>, or null if unknown.</summary>
@@ -108,9 +119,9 @@ public sealed class LocalModelManager : IDisposable
         string dir = ModelDirectory(model);
         Directory.CreateDirectory(dir);
 
-        long completedBytes = model.Files
-            .Where(f => File.Exists(Path.Combine(dir, f.RelativePath)))
-            .Sum(f => f.Size);
+        // Only fully verified files count as done; a partial file contributes
+        // its actual bytes via output.Position during its own download.
+        long completedBytes = 0;
         long totalBytes = model.TotalBytes;
 
         foreach (LocalModelFile file in model.Files)
@@ -121,6 +132,7 @@ public sealed class LocalModelManager : IDisposable
             if (File.Exists(path) && new FileInfo(path).Length == file.Size
                 && VerifyHash(path, file))
             {
+                completedBytes += file.Size;
                 continue; // already complete and intact
             }
 
@@ -186,10 +198,6 @@ public sealed class LocalModelManager : IDisposable
         StreamMode mode = response.StatusCode == System.Net.HttpStatusCode.PartialContent
             ? StreamMode.Append
             : StreamMode.Overwrite;
-        if (mode == StreamMode.Overwrite)
-        {
-            resumeFrom = 0;
-        }
 
         response.EnsureSuccessStatusCode();
 
@@ -208,7 +216,9 @@ public sealed class LocalModelManager : IDisposable
         while ((read = await content.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
         {
             await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-            long done = completedBefore + resumeFrom + output.Position;
+            // FileMode.Append opens positioned at the resume offset, so
+            // output.Position already includes previously downloaded bytes.
+            long done = completedBefore + output.Position;
             double fraction = totalBytes == 0 ? 0 : (double)done / totalBytes;
             ProgressChanged?.Invoke(
                 Math.Clamp(fraction, 0, 1),

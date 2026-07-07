@@ -483,3 +483,7 @@ $RECYCLE.BIN/
 
 # Local on-device model store (WINFLOW_MODELS_DIR)
 models/
+
+# Installer build artifacts
+installer/publish/
+installer/Output/

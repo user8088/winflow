@@ -72,11 +72,11 @@ public partial class LocalModelWindow : Window
 
     private string DriveSummary()
     {
-        double needMb = _model.TotalBytes / (1020.0 * 1024.0);
+        double needMb = _model.TotalBytes / (1024.0 * 1024.0);
         long? free = _manager.GetAvailableBytes();
         if (free is long f)
         {
-            double freeMb = f / (1020.0 * 1024.0);
+            double freeMb = f / (1024.0 * 1024.0);
             string note = f < _model.TotalBytes ? "  — NOT ENOUGH SPACE on this drive" : "";
             return $"Free here: {freeMb:F0} MB · needs ~{needMb:F0} MB{note}";
         }
