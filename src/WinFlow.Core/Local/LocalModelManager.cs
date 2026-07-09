@@ -112,6 +112,26 @@ public sealed class LocalModelManager : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Bytes still required on disk to finish a resumable download — total size
+    /// minus bytes already present in partial or complete files on disk.
+    /// </summary>
+    public long GetRemainingBytes(LocalModelDescriptor model)
+    {
+        string dir = ModelDirectory(model);
+        long onDisk = 0;
+        foreach (LocalModelFile file in model.Files)
+        {
+            string path = Path.Combine(dir, file.RelativePath);
+            if (File.Exists(path))
+            {
+                onDisk += Math.Min(new FileInfo(path).Length, file.Size);
+            }
+        }
+
+        return Math.Max(0, model.TotalBytes - onDisk);
+    }
+
     public async Task EnsureInstalledAsync(
         LocalModelDescriptor model,
         CancellationToken cancellationToken = default)

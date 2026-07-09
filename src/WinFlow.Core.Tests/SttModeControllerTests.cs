@@ -34,6 +34,22 @@ public class SttModeControllerTests
     }
 
     [Fact]
+    public void AutoPrefersLocalWhenCloudUnavailable()
+    {
+        var controller = new SttModeController(SttMode.Auto, () => false, () => true);
+        Assert.Equal(SttBackend.Local, controller.ResolvedBackend);
+    }
+
+    [Fact]
+    public void AutoFallsBackToCloudWhenNothingAvailable()
+    {
+        // No model and no API key: SttBackend has no 'none' value, so Cloud
+        // remains the deterministic last resort (the dictation fails visibly).
+        var controller = new SttModeController(SttMode.Auto, () => false, () => false);
+        Assert.Equal(SttBackend.Cloud, controller.ResolvedBackend);
+    }
+
+    [Fact]
     public void ApplyRaisesBackendChangedOnlyOnFlip()
     {
         var controller = new SttModeController(SttMode.Cloud, () => true, () => true);

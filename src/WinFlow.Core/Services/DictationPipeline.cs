@@ -37,6 +37,7 @@ public sealed class DictationPipeline : IDisposable
     private readonly ITextInjector _injector;
     private readonly TranscriptCorrectionService? _correction;
     private readonly DictationPipelineOptions _options;
+    private readonly Action<string> _clipboardFallback;
 
     // Hotkey events arrive sequentially, but a press can follow a release
     // faster than the async work completes; serialize session handling.
@@ -64,7 +65,8 @@ public sealed class DictationPipeline : IDisposable
         IBatchSttProvider? batch,
         ITextInjector injector,
         TranscriptCorrectionService? correction = null,
-        DictationPipelineOptions? options = null)
+        DictationPipelineOptions? options = null,
+        Action<string>? clipboardFallback = null)
     {
         if (streaming is null && batch is null)
         {
@@ -79,6 +81,7 @@ public sealed class DictationPipeline : IDisposable
         _injector = injector;
         _correction = correction;
         _options = options ?? new DictationPipelineOptions();
+        _clipboardFallback = clipboardFallback ?? (text => _ = Injection.ClipboardHelper.SetText(text));
 
         _hotkeys.HotkeyChanged += OnHotkeyChanged;
         _audio.ChunkAvailable += OnChunkAvailable;
@@ -109,6 +112,21 @@ public sealed class DictationPipeline : IDisposable
     /// <summary>Exposed for tests; production traffic arrives via the hotkey event.</summary>
     public async Task ProcessAsync(HotkeyEvent hotkeyEvent)
     {
+        // A press landing while the previous take is still transcribing must
+        // not queue behind the session lock: recording would only start once
+        // the lock frees, seconds after the user began speaking, and the
+        // utterance would be silently lost. Reject it with immediate feedback
+        // instead. A press during Recording still takes the lock (it is free
+        // then) so auto-repeat remains a silent no-op via the state guard.
+        if (hotkeyEvent.Kind == HotkeyEventKind.Pressed
+            && _coordinator.State is RecordingState.Processing or RecordingState.InjectionFailed)
+        {
+            DictationFailed?.Invoke(new DictationFailure(
+                DictationFailureKind.CaptureFailed,
+                "Still finishing the previous dictation — try again in a moment."));
+            return;
+        }
+
         await _sessionLock.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -182,6 +200,9 @@ public sealed class DictationPipeline : IDisposable
             }
             catch (Exception exception)
             {
+                // The streaming session opened on key-down must not leak just
+                // because capture teardown failed.
+                DiscardSessionInBackground(sessionTask);
                 DictationFailed?.Invoke(new DictationFailure(
                     DictationFailureKind.CaptureFailed, exception.GetBaseException().Message));
                 return;
@@ -221,19 +242,42 @@ public sealed class DictationPipeline : IDisposable
             }
             catch (Exception exception)
             {
-                // Leave the transcript on the clipboard so nothing is lost.
-                try
+                string reason = exception.GetBaseException().Message;
+                string message;
+
+                if (reason == Injection.ElevatedTargetDetector.BlockedMessage)
                 {
-                    Injection.ClipboardHelper.SetText(finalText);
+                    // The injector already placed the transcript on the
+                    // clipboard before throwing, and its message explains the
+                    // elevation trap; pass it through verbatim.
+                    message = reason;
                 }
-                catch
+                else if (exception.GetBaseException() is Injection.PartialTextInjectionException)
                 {
+                    // Some text was already typed — clipboard paste would
+                    // duplicate the partial transcript in the field.
+                    message = $"Couldn't finish typing ({reason}). "
+                        + "The partial transcript is already in the field — do not paste from the clipboard.";
+                }
+                else
+                {
+                    // Leave the transcript on the clipboard so nothing is
+                    // lost — but only claim it is there if that write worked.
+                    try
+                    {
+                        _clipboardFallback(finalText);
+                        message = $"Couldn't paste ({reason}). Text is on the clipboard — press Ctrl+V.";
+                    }
+                    catch (Exception clipboardException)
+                    {
+                        message = $"Couldn't paste ({reason}), and saving to the clipboard also failed "
+                            + $"({clipboardException.GetBaseException().Message}). "
+                            + "The text is NOT on the clipboard.";
+                    }
                 }
 
                 DictationFailed?.Invoke(new DictationFailure(
-                    DictationFailureKind.InjectionFailed,
-                    $"Couldn't paste ({exception.GetBaseException().Message}). Text is on the clipboard — press Ctrl+V.",
-                    finalText));
+                    DictationFailureKind.InjectionFailed, message, finalText));
             }
         }
         finally
@@ -302,23 +346,39 @@ public sealed class DictationPipeline : IDisposable
         Task? forwardingTask,
         CancellationToken cancellationToken)
     {
-        // Ensure every captured chunk reached the server before committing.
-        if (forwardingTask is not null)
-        {
-            await forwardingTask.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
+        // Set once the session has been captured; from that point the inner
+        // finally owns disposal. Before it, a cancellation (batch racer won)
+        // or a forwarding fault would otherwise abandon the session the
+        // key-down opened, leaking the WebSocket and never re-arming the
+        // warm-connection reuse that Session.DisposeAsync provides.
+        bool sessionCaptured = false;
 
-        IStreamingSttSession session = await sessionTask.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return await session
-                .FinishAsync(cancellationToken)
-                .WaitAsync(_options.StreamingFinishTimeout, cancellationToken)
-                .ConfigureAwait(false);
+            // Ensure every captured chunk reached the server before committing.
+            if (forwardingTask is not null)
+            {
+                await forwardingTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            IStreamingSttSession session = await sessionTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+            sessionCaptured = true;
+            try
+            {
+                return await session
+                    .FinishAsync(cancellationToken)
+                    .WaitAsync(_options.StreamingFinishTimeout, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                await session.DisposeAsync().ConfigureAwait(false);
+            }
         }
-        finally
+        catch when (!sessionCaptured)
         {
-            await session.DisposeAsync().ConfigureAwait(false);
+            DiscardSessionInBackground(sessionTask);
+            throw;
         }
     }
 

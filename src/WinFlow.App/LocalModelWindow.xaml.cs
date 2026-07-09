@@ -17,30 +17,25 @@ public partial class LocalModelWindow : Window
 {
     private readonly LocalModelManager _manager;
     private readonly SettingsStore _settingsStore;
-    private AppSettings _settings;
     private readonly LocalModelDescriptor _model;
     private readonly Action? _onInstalledChanged;
     private CancellationTokenSource? _cts;
 
-    /// <summary>Current settings (may differ from the constructor arg if the user changed the location).</summary>
-    public AppSettings Settings => _settings;
-
     public LocalModelWindow(
         LocalModelManager manager,
         SettingsStore settingsStore,
-        AppSettings settings,
         LocalModelDescriptor? model = null,
         Action? onInstalledChanged = null)
     {
         InitializeComponent();
         _manager = manager;
         _settingsStore = settingsStore;
-        _settings = settings;
         _model = model ?? LocalModelCatalog.Default;
         _onInstalledChanged = onInstalledChanged;
-        if (!string.IsNullOrWhiteSpace(_settings.ModelDirectory))
+        string? modelDirectory = _settingsStore.Current.ModelDirectory;
+        if (!string.IsNullOrWhiteSpace(modelDirectory))
         {
-            _manager.UseRoot(_settings.ModelDirectory);
+            _manager.UseRoot(modelDirectory);
         }
         RefreshState();
     }
@@ -72,12 +67,13 @@ public partial class LocalModelWindow : Window
 
     private string DriveSummary()
     {
-        double needMb = _model.TotalBytes / (1024.0 * 1024.0);
+        long remaining = _manager.GetRemainingBytes(_model);
+        double needMb = remaining / (1024.0 * 1024.0);
         long? free = _manager.GetAvailableBytes();
         if (free is long f)
         {
             double freeMb = f / (1024.0 * 1024.0);
-            string note = f < _model.TotalBytes ? "  — NOT ENOUGH SPACE on this drive" : "";
+            string note = f < remaining ? "  — NOT ENOUGH SPACE on this drive" : "";
             return $"Free here: {freeMb:F0} MB · needs ~{needMb:F0} MB{note}";
         }
 
@@ -99,8 +95,7 @@ public partial class LocalModelWindow : Window
 
         string chosen = picker.FolderName;
         _manager.UseRoot(chosen);
-        _settings = _settings with { ModelDirectory = chosen };
-        _settingsStore.Save(_settings);
+        _settingsStore.Update(s => s with { ModelDirectory = chosen });
         RefreshState();
     }
 
@@ -123,7 +118,7 @@ public partial class LocalModelWindow : Window
             return;
         }
 
-        if (_manager.GetAvailableBytes() is long free && free < _model.TotalBytes)
+        if (_manager.GetAvailableBytes() is long free && free < _manager.GetRemainingBytes(_model))
         {
             MessageBox.Show(
                 this,

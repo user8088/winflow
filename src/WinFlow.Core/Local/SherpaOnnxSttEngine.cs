@@ -18,16 +18,21 @@ namespace WinFlow.Core.Local;
 /// </summary>
 public sealed class SherpaOnnxSttEngine : IBatchSttProvider, IDisposable
 {
+    private static readonly TimeSpan DisposeTimeout = TimeSpan.FromSeconds(5);
+
     private readonly LocalModelManager _manager;
     private readonly LocalModelDescriptor _model;
-    private readonly Lazy<OfflineRecognizer> _recognizer;
-    private bool _disposed;
+
+    // Serializes runtime initialization and transcription, and lets Dispose
+    // wait for an in-flight decode before dropping the cached recognizer.
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private OfflineRecognizer? _recognizer;
+    private volatile bool _disposed;
 
     public SherpaOnnxSttEngine(LocalModelManager manager, LocalModelDescriptor? model = null)
     {
         _manager = manager;
         _model = model ?? LocalModelCatalog.Default;
-        _recognizer = new Lazy<OfflineRecognizer>(BuildRecognizer, LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
     public Task<string> TranscribeAsync(CapturedAudio audio, CancellationToken cancellationToken = default)
@@ -37,18 +42,35 @@ public sealed class SherpaOnnxSttEngine : IBatchSttProvider, IDisposable
             throw new ObjectDisposedException(nameof(SherpaOnnxSttEngine));
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
-
-        return Task.Run(() =>
+        return Task.Run(async () =>
         {
-            OfflineRecognizer recognizer = _recognizer.Value;
-            OfflineStream stream = recognizer.CreateStream();
+            cancellationToken.ThrowIfCancellationRequested();
 
-            float[] samples = ToFloatSamples(audio.Pcm16);
-            stream.AcceptWaveform(audio.SampleRate, samples);
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (_disposed)
+                {
+                    throw new ObjectDisposedException(nameof(SherpaOnnxSttEngine));
+                }
 
-            recognizer.Decode(stream);
-            return stream.Result.Text.Trim();
+                // Retryable init: if the model is not installed yet, BuildRecognizer
+                // throws and _recognizer stays null, so the next call re-checks
+                // instead of rethrowing a cached exception (unlike Lazy<T>).
+                OfflineRecognizer recognizer = _recognizer ??= BuildRecognizer();
+
+                OfflineStream stream = recognizer.CreateStream();
+
+                float[] samples = ToFloatSamples(audio.Pcm16);
+                stream.AcceptWaveform(audio.SampleRate, samples);
+
+                recognizer.Decode(stream);
+                return stream.Result.Text.Trim();
+            }
+            finally
+            {
+                _gate.Release();
+            }
         }, cancellationToken);
     }
 
@@ -105,8 +127,23 @@ public sealed class SherpaOnnxSttEngine : IBatchSttProvider, IDisposable
 
     public void Dispose()
     {
-        // The sherpa-onnx C# OfflineRecognizer binding has no Dispose; its
-        // native handle is reclaimed on finalization. We only gate further use.
+        if (_disposed)
+        {
+            return;
+        }
+
         _disposed = true;
+
+        // Wait (bounded) for an in-flight transcription to release the gate
+        // before dropping the cached recognizer. The sherpa-onnx C# binding
+        // has no Dispose; its native handle is reclaimed on finalization.
+        if (_gate.Wait(DisposeTimeout))
+        {
+            _recognizer = null;
+            _gate.Release();
+        }
+
+        // _gate is intentionally not disposed: late TranscribeAsync callers may
+        // still be waiting on it; they observe _disposed and throw.
     }
 }

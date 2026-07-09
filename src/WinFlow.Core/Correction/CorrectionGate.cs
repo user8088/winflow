@@ -8,15 +8,22 @@ namespace WinFlow.Core.Correction;
 /// </summary>
 public static partial class CorrectionGate
 {
-    private static readonly string[] Fillers =
+    private static readonly string[] StrongFillers =
     [
-        " um ", " uh ", " er ", " ah ", " like ", " you know ", " i mean ",
-        " sort of ", " kind of ",
+        " um ", " uh ", " er ", " ah ", " i mean ",
+    ];
+
+    // Ubiquitous in perfectly clean speech ("I like pizza", "I actually
+    // agree"), so these count as weak evidence: +1 combined at most, never
+    // enough to cross the threshold on their own.
+    private static readonly string[] WeakFillers =
+    [
+        " like ", " actually ", " you know ", " sort of ", " kind of ",
     ];
 
     private static readonly string[] SelfCorrections =
     [
-        "no wait", "wait no", "actually", "i mean", "sorry i", "let me rephrase",
+        "no wait", "wait no", "i mean", "sorry i", "let me rephrase",
         "what i meant", "or rather",
     ];
 
@@ -36,11 +43,20 @@ public static partial class CorrectionGate
         int score = 0;
         string lower = $" {transcript.ToLowerInvariant()} ";
 
-        foreach (string filler in Fillers)
+        foreach (string filler in StrongFillers)
         {
             if (lower.Contains(filler, StringComparison.Ordinal))
             {
                 score += 2;
+            }
+        }
+
+        foreach (string filler in WeakFillers)
+        {
+            if (lower.Contains(filler, StringComparison.Ordinal))
+            {
+                score += 1;
+                break;
             }
         }
 

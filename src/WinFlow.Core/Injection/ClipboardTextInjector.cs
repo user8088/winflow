@@ -5,43 +5,83 @@ namespace WinFlow.Core.Injection;
 
 /// <summary>
 /// Injects text by placing it on the clipboard, synthesizing Ctrl+V, and
-/// restoring the previous clipboard text afterwards. The broadest-compat
+/// restoring the previous clipboard contents afterwards. The broadest-compat
 /// strategy — works in terminals, browsers, and Electron apps where
-/// programmatic text APIs don't.
-///
-/// M1 limitation: only CF_UNICODETEXT is saved/restored, so a copied
-/// image or file list is lost. The strategy table in M2 narrows how often
-/// this path runs at all.
+/// programmatic text APIs don't. All duplicable clipboard formats (images,
+/// file lists, HTML/RTF, registered formats) are snapshotted and restored,
+/// not just plain text.
 /// </summary>
 public sealed class ClipboardTextInjector : ITextInjector
 {
     /// <summary>
     /// How long the target app gets to service the paste before the
-    /// previous clipboard text is restored.
+    /// previous clipboard contents are restored.
     /// </summary>
     private static readonly TimeSpan RestoreDelay = TimeSpan.FromMilliseconds(300);
 
     public async Task InjectAsync(string text, CancellationToken cancellationToken = default)
     {
-        string? previous = ClipboardHelper.TryGetText();
+        if (ElevatedTargetDetector.IsInjectionBlockedByUipi())
+        {
+            // UIPI would silently drop the synthesized Ctrl+V. Leave the
+            // transcript on the clipboard (no restore) so nothing is lost.
+            ClipboardHelper.SetText(text);
+            throw new InvalidOperationException(ElevatedTargetDetector.BlockedMessage);
+        }
 
-        ClipboardHelper.SetText(text);
-        SendCtrlV();
+        ClipboardSnapshot? snapshot = ClipboardHelper.TrySnapshot();
+
+        uint sequenceAfterWrite;
+        try
+        {
+            sequenceAfterWrite = ClipboardHelper.SetText(text);
+            SendCtrlV();
+        }
+        catch when (TryRestoreSnapshot(snapshot))
+        {
+            // TryRestoreSnapshot always returns false: restore the user's
+            // clipboard (best effort) and let the original exception fly.
+            throw;
+        }
 
         await Task.Delay(RestoreDelay, cancellationToken).ConfigureAwait(false);
 
-        if (!string.IsNullOrEmpty(previous))
+        if (ClipboardHelper.GetSequenceNumber() != sequenceAfterWrite)
+        {
+            // Someone else wrote to the clipboard during the paste window;
+            // they own it now, so restoring would clobber their content.
+            return;
+        }
+
+        if (snapshot is { IsEmpty: false })
+        {
+            // Restoring is best-effort; the injected text stays on the
+            // clipboard, which is a tolerable failure mode.
+            ClipboardHelper.TryRestore(snapshot);
+        }
+        else if (snapshot is { IsEmpty: true })
+        {
+            // The clipboard was empty before injection; clear it again so
+            // the transcript doesn't linger for other processes to read.
+            ClipboardHelper.TryClear();
+        }
+    }
+
+    private static bool TryRestoreSnapshot(ClipboardSnapshot? snapshot)
+    {
+        if (snapshot is not null)
         {
             try
             {
-                ClipboardHelper.SetText(previous);
+                ClipboardHelper.TryRestore(snapshot);
             }
             catch
             {
-                // Restoring is best-effort; the injected text stays on the
-                // clipboard, which is a tolerable failure mode.
+                // Best effort only; the original failure matters more.
             }
         }
+
+        return false; // Exception filter: never actually catch.
     }
 
     private const ushort VkControl = 0x11;
@@ -50,7 +90,7 @@ public sealed class ClipboardTextInjector : ITextInjector
 
     private static void SendCtrlV()
     {
-        Input[] sequence =
+        NativeInput.Input[] sequence =
         [
             MakeKey(VkControl, down: true),
             MakeKey(VkV, down: true),
@@ -58,33 +98,29 @@ public sealed class ClipboardTextInjector : ITextInjector
             MakeKey(VkControl, down: false),
         ];
 
-        if (SendInput((uint)sequence.Length, sequence, Marshal.SizeOf<Input>()) != sequence.Length)
+        uint injected = NativeInput.Send(sequence);
+        if (injected != sequence.Length)
         {
-            throw new InvalidOperationException(
-                $"SendInput failed (error {Marshal.GetLastWin32Error()}).");
+            int error = Marshal.GetLastWin32Error();
+
+            // SendInput inserts a prefix of the sequence before failing. If
+            // Ctrl-down went in but Ctrl-up (the last event) did not, release
+            // Ctrl so the user's keyboard isn't left with a stuck modifier.
+            // Best effort: its own failure is ignored.
+            if (injected >= 1)
+            {
+                NativeInput.Input[] release = [MakeKey(VkControl, down: false)];
+                NativeInput.Send(release);
+            }
+
+            throw new InvalidOperationException($"SendInput failed (error {error}).");
         }
     }
 
-    private static Input MakeKey(ushort virtualKey, bool down) => new()
+    private static NativeInput.Input MakeKey(ushort virtualKey, bool down) => new()
     {
         Type = 1, // INPUT_KEYBOARD
         VirtualKey = virtualKey,
         Flags = down ? 0 : KeyeventfKeyup,
     };
-
-    // INPUT is a 40-byte tagged union on x64; explicit layout keeps the
-    // keyboard fields at the union offset without defining MOUSEINPUT.
-    [StructLayout(LayoutKind.Explicit, Size = 40)]
-    private struct Input
-    {
-        [FieldOffset(0)] public uint Type;
-        [FieldOffset(8)] public ushort VirtualKey;
-        [FieldOffset(10)] public ushort ScanCode;
-        [FieldOffset(12)] public uint Flags;
-        [FieldOffset(16)] public uint Time;
-        [FieldOffset(24)] public nint ExtraInfo;
-    }
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern uint SendInput(uint count, Input[] inputs, int size);
 }

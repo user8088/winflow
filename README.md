@@ -105,12 +105,13 @@ WinFlow is actively developed. Implemented today:
 - Cloud transcription (streaming + batch race) with warm WebSocket pool
 - Local offline transcription (Parakeet via sherpa-onnx)
 - Clipboard text injection with restore
+- Keystroke injection via SendInput (Auto detects terminals; Paste or Type modes)
+- Transcript correction (Off / Auto-correct / Aggressive; cloud or local model)
 - API key management, model download UI, STT mode switching
 
 Planned (see [ARCHITECTURE.md](ARCHITECTURE.md)):
 
-- LLM polish pass for messy transcripts
-- Per-app injection strategies (UIA, SendInput)
+- UIA per-app injection strategies
 - Settings/onboarding WebView2 UI
 - Auto-update (Velopack), winget distribution
 - Custom vocabulary, dictation history, per-app profiles

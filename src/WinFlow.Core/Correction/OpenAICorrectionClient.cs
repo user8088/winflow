@@ -43,11 +43,16 @@ public sealed class OpenAICorrectionClient : ITranscriptCorrector
         string systemPrompt = CorrectionPrompts.BuildSystemPrompt(intensity);
         string userMessage = CorrectionPrompts.BuildUserMessage(transcript);
 
+        // Scale the output budget with the input so long takes are never cut
+        // off mid-sentence (rough estimate: ~3 chars per token, 2x headroom).
+        int estimatedTranscriptTokens = transcript.Length / 3;
+        int maxTokens = Math.Clamp(estimatedTranscriptTokens * 2, 512, 4096);
+
         var payload = new
         {
             model = _model,
             temperature = 0.2,
-            max_tokens = 512,
+            max_tokens = maxTokens,
             messages = new object[]
             {
                 new { role = "system", content = systemPrompt },
@@ -78,7 +83,19 @@ public sealed class OpenAICorrectionClient : ITranscriptCorrector
             return transcript;
         }
 
-        JsonElement message = choices[0].GetProperty("message");
+        JsonElement choice = choices[0];
+
+        // finish_reason "length" means the correction was cut off by the
+        // token budget; the truncated text has lost the tail of the take,
+        // so the raw transcript is strictly better.
+        if (choice.TryGetProperty("finish_reason", out JsonElement finishReason)
+            && finishReason.ValueKind == JsonValueKind.String
+            && string.Equals(finishReason.GetString(), "length", StringComparison.Ordinal))
+        {
+            return transcript;
+        }
+
+        JsonElement message = choice.GetProperty("message");
         return message.GetProperty("content").GetString()?.Trim() ?? transcript;
     }
 

@@ -41,6 +41,8 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        RegisterGlobalExceptionHandlers();
+
         _singleInstanceMutex = new Mutex(initiallyOwned: true, @"Local\WinFlow.App", out bool isFirstInstance);
         if (!isFirstInstance)
         {
@@ -60,7 +62,7 @@ public partial class App : Application
 
         var credentials = new WindowsCredentialStore();
         var settingsStore = new SettingsStore();
-        AppSettings settings = settingsStore.Load();
+        AppSettings settings = settingsStore.Current;
 
         var coordinator = new RecordingCoordinator();
         _hotkeys = new LowLevelKeyboardHookProvider(allowInjected: allowInjected);
@@ -72,10 +74,8 @@ public partial class App : Application
 
         SttModeController modeController = new(
             settings.SttMode,
-            cloudAvailable: () => hasApiKey,
+            cloudAvailable: () => !string.IsNullOrEmpty(credentials.GetApiKey()),
             localAvailable: () => _modelManager.IsInstalled(LocalModelCatalog.Default));
-        modeController.BackendChanged += _ =>
-            settingsStore.Save(settings with { SttMode = modeController.ConfiguredMode });
 
         IStreamingSttProvider streaming;
         IBatchSttProvider batch;
@@ -144,7 +144,6 @@ public partial class App : Application
             correctionMode,
             _modelManager,
             settingsStore,
-            settings,
             inputRouter,
             ExitApplication);
 
@@ -169,6 +168,36 @@ public partial class App : Application
                 MessageBoxImage.Error);
             ExitApplication();
         }
+    }
+
+    private void RegisterGlobalExceptionHandlers()
+    {
+        // Windowless tray app: without these, any unhandled exception silently
+        // removes the tray icon and kills the process with no feedback.
+        DispatcherUnhandledException += (_, args) =>
+        {
+            args.Handled = true;
+            MessageBox.Show(
+                $"WinFlow hit an unexpected error:\n\n{args.Exception.Message}",
+                "WinFlow",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        };
+
+        TaskScheduler.UnobservedTaskException += (_, args) => args.SetObserved();
+
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+        {
+            // The process is terminating; a message box is best-effort.
+            if (args.ExceptionObject is Exception exception)
+            {
+                MessageBox.Show(
+                    $"WinFlow encountered a fatal error and must exit.\n\n{exception.Message}",
+                    "WinFlow",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+            }
+        };
     }
 
     private void ExitApplication()

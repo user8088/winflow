@@ -19,6 +19,12 @@ public sealed class WasapiAudioProvider : IAudioProvider
 {
     public const int TargetSampleRate = 24000;
 
+    // A device-invalidated stop (Bluetooth disconnect, USB unplug) must not
+    // discard the take: if at least this much audio was accumulated (~0.3 s of
+    // 16-bit mono PCM), StopAsync returns the partial capture instead of
+    // throwing, and the pipeline transcribes what was recorded.
+    private const int MinUsablePartialBytes = TargetSampleRate * 2 * 3 / 10;
+
     private readonly Lock _gate = new();
 
     private NAudio.CoreAudioApi.WasapiCapture? _capture;
@@ -110,7 +116,11 @@ public sealed class WasapiAudioProvider : IAudioProvider
             _accumulated = null;
             _stopped = null;
 
-            if (failure is not null)
+            // Audio must degrade, not crash: if the device died mid-recording
+            // but we already accumulated a usable amount of audio, return the
+            // partial take so the user's speech still gets transcribed. Only
+            // throw when there is essentially nothing to salvage.
+            if (failure is not null && pcm.Length < MinUsablePartialBytes)
             {
                 throw new InvalidOperationException("Audio capture stopped with an error.", failure);
             }
