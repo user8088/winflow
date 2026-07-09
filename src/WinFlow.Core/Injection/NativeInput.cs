@@ -21,9 +21,48 @@ internal static class NativeInput
         [FieldOffset(24)] public nint ExtraInfo;
     }
 
-    internal static uint Send(Input[] inputs) =>
-        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>());
+    internal static uint Send(Input[] inputs)
+    {
+        if (inputs.Length == 0)
+        {
+            return 0;
+        }
+
+        nint foreground = GetForegroundWindow();
+        uint foregroundThread = foreground != 0
+            ? GetWindowThreadProcessId(foreground, out _)
+            : 0;
+        uint currentThread = GetCurrentThreadId();
+        bool attached = foregroundThread != 0
+            && foregroundThread != currentThread
+            && AttachThreadInput(currentThread, foregroundThread, fAttach: true);
+
+        try
+        {
+            return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>());
+        }
+        finally
+        {
+            if (attached)
+            {
+                AttachThreadInput(currentThread, foregroundThread, fAttach: false);
+            }
+        }
+    }
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint count, Input[] inputs, int size);
+
+    [DllImport("user32.dll")]
+    private static extern nint GetForegroundWindow();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint GetWindowThreadProcessId(nint hWnd, out uint lpdwProcessId);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
 }

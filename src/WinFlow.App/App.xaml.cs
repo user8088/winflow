@@ -1,4 +1,5 @@
 using System.Windows;
+using Microsoft.Win32;
 using WinFlow.Core.Abstractions;
 using WinFlow.Core.Audio;
 using WinFlow.Core.Correction;
@@ -165,6 +166,7 @@ public partial class App : Application
 
         try
         {
+            SystemEvents.SessionSwitch += OnSessionSwitch;
             _hotkeys.Start();
             _tray.ShowWelcome(hasApiKey, _modelManager.IsInstalled(LocalModelCatalog.Default));
         }
@@ -209,8 +211,15 @@ public partial class App : Application
         };
     }
 
+    private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
+    {
+        // Key-ups on secure desktops (UAC, lock screen) never reach the hook.
+        _hotkeys?.NotifyDesktopSwitch();
+    }
+
     private void ExitApplication()
     {
+        SystemEvents.SessionSwitch -= OnSessionSwitch;
         _tray?.Dispose();
         _hud?.Dispose();
         _pipeline?.Dispose();

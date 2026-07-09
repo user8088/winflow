@@ -27,10 +27,17 @@ public sealed class InputMethodRouter : ITextInjector
         Method = method;
     }
 
-    public Task InjectAsync(string text, CancellationToken cancellationToken = default)
+    public async Task InjectAsync(string text, CancellationToken cancellationToken = default)
     {
-        ITextInjector injector = Resolve() == InputMethod.Type ? _typeInjector : _pasteInjector;
-        return injector.InjectAsync(text, cancellationToken);
+        try
+        {
+            ITextInjector injector = Resolve() == InputMethod.Type ? _typeInjector : _pasteInjector;
+            await injector.InjectAsync(text, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            ModifierRelease.ReleaseAll();
+        }
     }
 
     private InputMethod Resolve() => Method switch
@@ -74,7 +81,7 @@ public sealed class InputMethodRouter : ITextInjector
     // fine with keystrokes, so this is a safe over-approximation).
     private static readonly HashSet<string> TerminalProcessNames = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Cursor", "Code", "Code - Insiders", "VSCodium",
+        "Cursor", "Code", "Code - Insiders", "VSCodium", "Claude",
         "WindowsTerminal", "OpenConsole", "conhost",
         "cmd", "powershell", "pwsh", "pwsh-preview",
         "mintty", "alacritty", "wezterm-gui", "hyper", "Tabby",

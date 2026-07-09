@@ -43,6 +43,10 @@ public sealed class ClipboardTextInjector : ITextInjector
             // clipboard (best effort) and let the original exception fly.
             throw;
         }
+        finally
+        {
+            ModifierRelease.ReleaseAll();
+        }
 
         await Task.Delay(RestoreDelay, cancellationToken).ConfigureAwait(false);
 
