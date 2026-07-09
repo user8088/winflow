@@ -68,6 +68,21 @@ public class TranscriptCorrectionServiceTests
         Assert.Equal("broken text um", result);
     }
 
+    [Fact]
+    public async Task FallsBackToRawOnDrasticTruncation()
+    {
+        var service = new TranscriptCorrectionService(
+            () => CorrectionMode.Aggressive,
+            new TruncatingCorrector());
+
+        string result = await service.ProcessAsync(
+            "um so I was thinking we should probably reschedule the meeting");
+
+        Assert.Equal(
+            "um so I was thinking we should probably reschedule the meeting",
+            result);
+    }
+
     private sealed class FailingCorrector : ITranscriptCorrector
     {
         public Task<string> CorrectAsync(
@@ -75,5 +90,14 @@ public class TranscriptCorrectionServiceTests
             CorrectionIntensity intensity,
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("correction failed");
+    }
+
+    private sealed class TruncatingCorrector : ITranscriptCorrector
+    {
+        public Task<string> CorrectAsync(
+            string transcript,
+            CorrectionIntensity intensity,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult("The");
     }
 }

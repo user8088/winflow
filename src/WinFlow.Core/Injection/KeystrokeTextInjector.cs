@@ -27,6 +27,14 @@ public sealed class KeystrokeTextInjector : ITextInjector
             return Task.CompletedTask;
         }
 
+        if (ElevatedTargetDetector.IsInjectionBlockedByUipi())
+        {
+            // UIPI would silently drop every synthesized keystroke. Leave the
+            // transcript on the clipboard so nothing is lost.
+            ClipboardHelper.SetText(text);
+            throw new InvalidOperationException(ElevatedTargetDetector.BlockedMessage);
+        }
+
         Input[] inputs = BuildInputs(safe);
         if (SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>()) != inputs.Length)
         {
