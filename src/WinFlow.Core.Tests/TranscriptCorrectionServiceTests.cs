@@ -123,6 +123,37 @@ public class TranscriptCorrectionServiceTests
         Assert.Equal("um I was thinking we should reschedule", result);
     }
 
+    [Fact]
+    public async Task FallsBackToRawOnCorrectionTimeout()
+    {
+        const string raw = "um I need to send the quarterly report to the team";
+        var service = new TranscriptCorrectionService(
+            () => CorrectionMode.Aggressive,
+            new SlowCorrector(),
+            TimeSpan.FromMilliseconds(50));
+
+        string result = await service.ProcessAsync(raw);
+
+        Assert.Equal(raw, result);
+    }
+
+    [Fact]
+    public async Task TruncatesRunawayExpansion()
+    {
+        const string raw = "um I need to send the quarterly report to the team";
+        string runaway = new('x', 700);
+        int maxLen = Math.Max(raw.Length * 2 + 100, 500);
+
+        var service = new TranscriptCorrectionService(
+            () => CorrectionMode.Aggressive,
+            new FixedOutputCorrector(runaway));
+
+        string result = await service.ProcessAsync(raw);
+
+        Assert.Equal(maxLen, result.Length);
+        Assert.Equal(runaway[..maxLen], result);
+    }
+
     private sealed class FixedOutputCorrector(string output) : ITranscriptCorrector
     {
         public Task<string> CorrectAsync(
@@ -148,5 +179,17 @@ public class TranscriptCorrectionServiceTests
             CorrectionIntensity intensity,
             CancellationToken cancellationToken = default) =>
             Task.FromResult("The");
+    }
+
+    private sealed class SlowCorrector : ITranscriptCorrector
+    {
+        public async Task<string> CorrectAsync(
+            string transcript,
+            CorrectionIntensity intensity,
+            CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+            return $"[fixed] {transcript}";
+        }
     }
 }

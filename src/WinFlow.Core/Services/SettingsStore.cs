@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -45,6 +46,9 @@ public sealed class SettingsStore
     private readonly object _gate = new();
     private AppSettings? _current;
 
+    /// <summary>Raised when <see cref="Save"/> fails; settings remain in memory.</summary>
+    public event Action<Exception>? SaveFailed;
+
     /// <summary>The current settings, loaded from disk on first access.</summary>
     public AppSettings Current
     {
@@ -90,7 +94,8 @@ public sealed class SettingsStore
 
         try
         {
-            return JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
+            var settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
+            return SanitizeEnumValues(settings);
         }
         catch (JsonException)
         {
@@ -110,17 +115,41 @@ public sealed class SettingsStore
         try
         {
             string? dir = Path.GetDirectoryName(FilePath);
-            if (!string.IsNullOrEmpty(dir))
+            if (string.IsNullOrEmpty(dir))
             {
-                Directory.CreateDirectory(dir);
+                return;
             }
 
+            Directory.CreateDirectory(dir);
+
             string json = JsonSerializer.Serialize(settings, JsonOptions);
-            File.WriteAllText(FilePath, json);
+            string tempPath = Path.Combine(dir, Path.GetRandomFileName());
+
+            try
+            {
+                File.WriteAllText(tempPath, json);
+                if (File.Exists(FilePath))
+                {
+                    File.Replace(tempPath, FilePath, destinationBackupFileName: null);
+                }
+                else
+                {
+                    File.Move(tempPath, FilePath);
+                }
+            }
+            finally
+            {
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+            }
         }
-        catch
+        catch (Exception ex)
         {
             // Settings are best-effort; a failed save must not crash dictation.
+            Debug.WriteLine($"Settings save failed: {ex}");
+            SaveFailed?.Invoke(ex);
         }
     }
 
@@ -207,6 +236,33 @@ public sealed class SettingsStore
         }
 
         return settings;
+    }
+
+    /// <summary>
+    /// JsonSerializer accepts out-of-range integer ordinals without error;
+    /// reset any undefined enum members to <see cref="AppSettings"/> defaults.
+    /// </summary>
+    private static AppSettings SanitizeEnumValues(AppSettings settings)
+    {
+        var defaults = new AppSettings();
+        AppSettings sanitized = settings;
+
+        if (!Enum.IsDefined(settings.SttMode))
+        {
+            sanitized = sanitized with { SttMode = defaults.SttMode };
+        }
+
+        if (!Enum.IsDefined(settings.InputMethod))
+        {
+            sanitized = sanitized with { InputMethod = defaults.InputMethod };
+        }
+
+        if (!Enum.IsDefined(settings.CorrectionMode))
+        {
+            sanitized = sanitized with { CorrectionMode = defaults.CorrectionMode };
+        }
+
+        return sanitized;
     }
 
     private static bool TryReadEnum<TEnum>(JsonElement element, out TEnum value)

@@ -28,6 +28,17 @@ public partial class ApiKeyDialog : Window
             return;
         }
 
+        if (!key.StartsWith("sk-", StringComparison.Ordinal) || key.Length < 20 || key.Length > 256)
+        {
+            MessageBox.Show(
+                this,
+                "Enter a valid OpenAI API key (starts with sk-).",
+                "WinFlow",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
         try
         {
             _credentials.SetApiKey(key);

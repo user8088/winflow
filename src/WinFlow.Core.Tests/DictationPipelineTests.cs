@@ -316,6 +316,47 @@ public class DictationPipelineTests
         await _session.Received(1).DisposeAsync();
     }
 
+    // #66: the no-speech discard path must observe a still-running forwarding
+    // task so a late session-open fault does not become unobserved.
+    [Fact]
+    public async Task NoSpeechPathObservesForwardingTaskFault()
+    {
+        var sessionReady = new TaskCompletionSource<IStreamingSttSession>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _streaming.OpenSessionAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => sessionReady.Task);
+        _audio.StopAsync(Arg.Any<CancellationToken>()).Returns(SilentTake);
+
+        var unobserved = new TaskCompletionSource<Exception>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+        {
+            unobserved.TrySetResult(e.Exception.GetBaseException());
+            e.SetObserved();
+        }
+
+        TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+        try
+        {
+            using var pipeline = CreatePipeline();
+            DictationFailure? failure = null;
+            pipeline.DictationFailed += f => failure = f;
+
+            await RunFullSessionAsync(pipeline);
+
+            Assert.Equal(DictationFailureKind.NoSpeech, failure?.Kind);
+
+            sessionReady.SetException(new InvalidOperationException("streaming open failed"));
+            await Task.Delay(200);
+
+            Assert.False(unobserved.Task.IsCompleted);
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= OnUnobservedTaskException;
+        }
+    }
+
     // #29: batch winning while the streaming session is still connecting must
     // not leak the session once the open eventually completes.
     [Fact]
@@ -519,6 +560,39 @@ public class DictationPipelineTests
         Assert.Equal("first take", completed);
         Assert.Single(failures);
         Assert.Equal(RecordingState.Idle, pipeline.State);
+    }
+
+    [Fact]
+    public async Task AutoStopsWhenMaxRecordingDurationExceeded()
+    {
+        var stopGate = new TaskCompletionSource<CapturedAudio>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _audio.StartAsync(Arg.Any<CancellationToken>()).Returns(Task.CompletedTask);
+        _audio.StopAsync(Arg.Any<CancellationToken>()).Returns(stopGate.Task);
+        _session.FinishAsync(Arg.Any<CancellationToken>()).Returns("capped take");
+
+        var options = new DictationPipelineOptions
+        {
+            MaxRecordingDuration = TimeSpan.FromMilliseconds(50),
+        };
+
+        using var pipeline = CreatePipeline(options: options);
+
+        TimeSpan? cappedAt = null;
+        pipeline.RecordingDurationCapped += limit => cappedAt = limit;
+        string? completed = null;
+        pipeline.DictationCompleted += text => completed = text;
+
+        await pipeline.ProcessAsync(HotkeyEvent.Pressed());
+        Assert.Equal(RecordingState.Recording, pipeline.State);
+
+        await WaitUntilAsync(() => cappedAt.HasValue);
+
+        stopGate.SetResult(GoodTake);
+        await WaitUntilAsync(() => pipeline.State == RecordingState.Idle);
+
+        Assert.Equal(TimeSpan.FromMilliseconds(50), cappedAt);
+        Assert.Equal("capped take", completed);
+        await _audio.Received(1).StopAsync(Arg.Any<CancellationToken>());
     }
 
     private int SessionDisposeCount()

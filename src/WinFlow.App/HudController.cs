@@ -1,4 +1,3 @@
-using System.Windows;
 using WinFlow.Core.Models;
 using WinFlow.Core.Services;
 
@@ -14,7 +13,7 @@ public sealed class HudController : IDisposable
 
     public HudController(DictationPipeline pipeline, RecordingCoordinator coordinator)
     {
-        coordinator.StateChanged += state => OnUi(() =>
+        coordinator.StateChanged += state => UiDispatcher.RunOnUiThread(() =>
         {
             switch (state)
             {
@@ -29,9 +28,9 @@ public sealed class HudController : IDisposable
 
         pipeline.LevelChanged += rms => _hud.ReportLevel(rms);
 
-        pipeline.DictationCompleted += _ => OnUi(() => _hud.FlashResult("✓", success: true));
+        pipeline.DictationCompleted += _ => UiDispatcher.RunOnUiThread(() => _hud.FlashResult("✓", success: true));
 
-        pipeline.DictationFailed += failure => OnUi(() =>
+        pipeline.DictationFailed += failure => UiDispatcher.RunOnUiThread(() =>
         {
             if (failure.Kind == DictationFailureKind.NoSpeech)
             {
@@ -44,18 +43,5 @@ public sealed class HudController : IDisposable
         });
     }
 
-    private static void OnUi(Action action)
-    {
-        var dispatcher = Application.Current?.Dispatcher;
-        if (dispatcher is null || dispatcher.CheckAccess())
-        {
-            action();
-        }
-        else
-        {
-            dispatcher.BeginInvoke(action);
-        }
-    }
-
-    public void Dispose() => OnUi(() => _hud.Close());
+    public void Dispose() => UiDispatcher.RunOnUiThread(() => _hud.Close());
 }

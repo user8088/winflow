@@ -16,8 +16,7 @@ public static class AudioLevelAnalyzer
         double sumOfSquares = 0;
         for (int i = 0; i < sampleCount; i++)
         {
-            short sample = (short)(pcm16[i * 2] | (pcm16[i * 2 + 1] << 8));
-            double normalized = sample / 32768.0;
+            double normalized = Pcm16Codec.SampleToFloat(Pcm16Codec.DecodeSample(pcm16, i));
             sumOfSquares += normalized * normalized;
         }
 

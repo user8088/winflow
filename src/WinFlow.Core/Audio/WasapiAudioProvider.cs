@@ -19,6 +19,13 @@ public sealed class WasapiAudioProvider : IAudioProvider
 {
     public const int TargetSampleRate = 24000;
 
+    /// <summary>Default cap for hold-to-talk; prevents unbounded in-memory accumulation.</summary>
+    public static readonly TimeSpan DefaultMaxRecordingDuration = TimeSpan.FromMinutes(5);
+
+    // 16-bit mono PCM at TargetSampleRate for DefaultMaxRecordingDuration.
+    public static readonly int MaxRecordingBytes =
+        TargetSampleRate * 2 * (int)DefaultMaxRecordingDuration.TotalSeconds;
+
     // A device-invalidated stop (Bluetooth disconnect, USB unplug) must not
     // discard the take: if at least this much audio was accumulated (~0.3 s of
     // 16-bit mono PCM), StopAsync returns the partial capture instead of
@@ -32,7 +39,9 @@ public sealed class WasapiAudioProvider : IAudioProvider
     private ISampleProvider? _converted;
     private MemoryStream? _accumulated;
     private float[] _floatBuffer = new float[TargetSampleRate]; // 1s of headroom
+    private byte[] _pcmBuffer = new byte[TargetSampleRate * 2];
     private float _peakRms;
+    private bool _recordingCapped;
     private TaskCompletionSource<Exception?>? _stopped;
 
     public event Action<AudioChunk>? ChunkAvailable;
@@ -50,29 +59,44 @@ public sealed class WasapiAudioProvider : IAudioProvider
                 }
 
                 var capture = new NAudio.CoreAudioApi.WasapiCapture();
+                var started = false;
 
-                _deviceBuffer = new BufferedWaveProvider(capture.WaveFormat)
+                try
                 {
-                    ReadFully = false,
-                    BufferDuration = TimeSpan.FromSeconds(10),
-                    DiscardOnBufferOverflow = true,
-                };
+                    _deviceBuffer = new BufferedWaveProvider(capture.WaveFormat)
+                    {
+                        ReadFully = false,
+                        BufferDuration = TimeSpan.FromSeconds(10),
+                        DiscardOnBufferOverflow = true,
+                    };
 
-                ISampleProvider samples = _deviceBuffer.ToSampleProvider();
-                if (capture.WaveFormat.Channels > 1)
-                {
-                    samples = new MonoAverageSampleProvider(samples);
+                    ISampleProvider samples = _deviceBuffer.ToSampleProvider();
+                    if (capture.WaveFormat.Channels > 1)
+                    {
+                        samples = new MonoAverageSampleProvider(samples);
+                    }
+
+                    _converted = new WdlResamplingSampleProvider(samples, TargetSampleRate);
+                    _accumulated = new MemoryStream();
+                    _peakRms = 0;
+                    _recordingCapped = false;
+                    _stopped = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+                    capture.DataAvailable += OnDataAvailable;
+                    capture.RecordingStopped += OnRecordingStopped;
+                    capture.StartRecording();
+                    _capture = capture;
+                    started = true;
                 }
-
-                _converted = new WdlResamplingSampleProvider(samples, TargetSampleRate);
-                _accumulated = new MemoryStream();
-                _peakRms = 0;
-                _stopped = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
-
-                capture.DataAvailable += OnDataAvailable;
-                capture.RecordingStopped += OnRecordingStopped;
-                capture.StartRecording();
-                _capture = capture;
+                finally
+                {
+                    if (!started)
+                    {
+                        capture.DataAvailable -= OnDataAvailable;
+                        capture.RecordingStopped -= OnRecordingStopped;
+                        capture.Dispose();
+                    }
+                }
             }
         }, cancellationToken);
     }
@@ -169,24 +193,50 @@ public sealed class WasapiAudioProvider : IAudioProvider
         int read;
         while ((read = _converted.Read(_floatBuffer, 0, _floatBuffer.Length)) > 0)
         {
-            byte[] pcm = new byte[read * 2];
-            for (int i = 0; i < read; i++)
+            if (_accumulated.Length >= MaxRecordingBytes)
             {
-                float clamped = Math.Clamp(_floatBuffer[i], -1f, 1f);
-                short sample = (short)(clamped * short.MaxValue);
-                pcm[i * 2] = (byte)(sample & 0xFF);
-                pcm[i * 2 + 1] = (byte)((sample >> 8) & 0xFF);
+                if (!_recordingCapped)
+                {
+                    _recordingCapped = true;
+                    _capture?.StopRecording();
+                }
+
+                return;
             }
 
-            _accumulated.Write(pcm, 0, pcm.Length);
+            int pcmBytes = read * 2;
+            if (_pcmBuffer.Length < pcmBytes)
+            {
+                _pcmBuffer = new byte[pcmBytes];
+            }
 
-            float rms = AudioLevelAnalyzer.ComputeRms(pcm);
+            Pcm16Codec.WriteFloatSamples(_floatBuffer.AsSpan(0, read), _pcmBuffer.AsSpan(0, pcmBytes));
+
+            int writable = Math.Min(pcmBytes, MaxRecordingBytes - (int)_accumulated.Length);
+            if (writable <= 0)
+            {
+                return;
+            }
+
+            _accumulated.Write(_pcmBuffer, 0, writable);
+
+            ReadOnlySpan<byte> pcmSpan = _pcmBuffer.AsSpan(0, writable);
+            float rms = AudioLevelAnalyzer.ComputeRms(pcmSpan);
             if (rms > _peakRms)
             {
                 _peakRms = rms;
             }
 
-            ChunkAvailable?.Invoke(new AudioChunk(pcm, rms));
+            if (ChunkAvailable is not null)
+            {
+                ChunkAvailable.Invoke(new AudioChunk(pcmSpan.ToArray(), rms));
+            }
+
+            if (_accumulated.Length >= MaxRecordingBytes && !_recordingCapped)
+            {
+                _recordingCapped = true;
+                _capture?.StopRecording();
+            }
         }
     }
 }

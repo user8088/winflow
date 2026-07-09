@@ -29,8 +29,8 @@ public static class LocalModelCatalog
             7257753, "b6bb64963457237b900e496ee9994b59294526439fbcc1fecf705b31a15c6b4e"),
         new("joiner.int8.onnx", $"{ParakeetBase}/joiner.int8.onnx",
             1739080, "7946164367946e7f9f29a122407c3252b680dbae9a51343eb2488d057c3c43d2"),
-        // tokens.txt is a small non-LFS file; verify by size only.
-        new("tokens.txt", $"{ParakeetBase}/tokens.txt", 9384, null),
+        new("tokens.txt", $"{ParakeetBase}/tokens.txt", 9384,
+            "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d"),
     ];
 
     public static LocalModelDescriptor ParakeetTdt06bV2 { get; } = new(

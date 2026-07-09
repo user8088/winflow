@@ -106,6 +106,29 @@ public class SettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void LoadResetsOutOfRangeIntegerEnumsToDefaults()
+    {
+        SettingsStore store = NewStore();
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(store.FilePath, """
+            {
+              "sttMode": 99,
+              "nearFieldMic": false,
+              "inputMethod": -1,
+              "correctionMode": 42
+            }
+            """);
+
+        AppSettings loaded = store.Load();
+        AppSettings defaults = new();
+
+        Assert.Equal(defaults.SttMode, loaded.SttMode);
+        Assert.False(loaded.NearFieldMic);
+        Assert.Equal(defaults.InputMethod, loaded.InputMethod);
+        Assert.Equal(defaults.CorrectionMode, loaded.CorrectionMode);
+    }
+
+    [Fact]
     public void LegacyFileWithoutSchemaVersionDefaultsToCurrent()
     {
         SettingsStore store = NewStore();
@@ -175,5 +198,22 @@ public class SettingsStoreTests : IDisposable
         NewStore().Save(NonDefaultSettings);
 
         Assert.Equal(NonDefaultSettings, NewStore().Current);
+    }
+
+    [Fact]
+    public void SaveFailureRaisesSaveFailedAndDoesNotThrow()
+    {
+        Directory.CreateDirectory(_dir);
+        string blockedDir = Path.Combine(_dir, "blocked");
+        File.WriteAllText(blockedDir, "not a directory");
+
+        var store = new SettingsStore(blockedDir);
+        Exception? captured = null;
+        store.SaveFailed += ex => captured = ex;
+
+        Exception? thrown = Record.Exception(() => store.Save(NonDefaultSettings));
+
+        Assert.Null(thrown);
+        Assert.NotNull(captured);
     }
 }

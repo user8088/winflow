@@ -118,6 +118,12 @@ public partial class LocalModelWindow : Window
             return;
         }
 
+        if (_cts != null)
+        {
+            _cts.Cancel();
+            return;
+        }
+
         if (_manager.GetAvailableBytes() is long free && free < _manager.GetRemainingBytes(_model))
         {
             MessageBox.Show(
@@ -129,7 +135,6 @@ public partial class LocalModelWindow : Window
             return;
         }
 
-        PrimaryButton.IsEnabled = false;
         PrimaryButton.Content = "Cancel";
         Progress.Visibility = Visibility.Visible;
         StatusText.Visibility = Visibility.Visible;
