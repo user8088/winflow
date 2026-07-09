@@ -4,12 +4,9 @@ using WinFlow.Core.Abstractions;
 namespace WinFlow.Core.Injection;
 
 /// <summary>
-/// Injects text by placing it on the clipboard, synthesizing Ctrl+V, and
-/// restoring the previous clipboard contents afterwards. The broadest-compat
-/// strategy — works in terminals, browsers, and Electron apps where
-/// programmatic text APIs don't. All duplicable clipboard formats (images,
-/// file lists, HTML/RTF, registered formats) are snapshotted and restored,
-/// not just plain text.
+/// Injects text by placing it on the clipboard and pasting via WM_PASTE or
+/// Shift+Insert. Avoids synthetic Ctrl+V, which many Electron apps and browsers
+/// mishandle (Ctrl is dropped and only the letter "v" is typed).
 /// </summary>
 public sealed class ClipboardTextInjector : ITextInjector
 {
@@ -19,12 +16,17 @@ public sealed class ClipboardTextInjector : ITextInjector
     /// </summary>
     private static readonly TimeSpan RestoreDelay = TimeSpan.FromMilliseconds(300);
 
+    private const ushort VkShift = 0x10;
+    private const ushort VkInsert = 0x2D;
+    private const ushort VkLControl = 0xA2;
+    private const ushort VkV = 0x56;
+    private const uint KeyeventfKeyup = 0x0002;
+    private const uint KeyeventfScancode = 0x0008;
+
     public async Task InjectAsync(string text, CancellationToken cancellationToken = default)
     {
         if (ElevatedTargetDetector.IsInjectionBlockedByUipi())
         {
-            // UIPI would silently drop the synthesized Ctrl+V. Leave the
-            // transcript on the clipboard (no restore) so nothing is lost.
             ClipboardHelper.SetText(text);
             throw new InvalidOperationException(ElevatedTargetDetector.BlockedMessage);
         }
@@ -35,38 +37,26 @@ public sealed class ClipboardTextInjector : ITextInjector
         try
         {
             sequenceAfterWrite = ClipboardHelper.SetText(text);
-            SendCtrlV();
+            PasteFromClipboard();
         }
         catch when (TryRestoreSnapshot(snapshot))
         {
-            // TryRestoreSnapshot always returns false: restore the user's
-            // clipboard (best effort) and let the original exception fly.
             throw;
-        }
-        finally
-        {
-            ModifierRelease.ReleaseAll();
         }
 
         await Task.Delay(RestoreDelay, cancellationToken).ConfigureAwait(false);
 
         if (ClipboardHelper.GetSequenceNumber() != sequenceAfterWrite)
         {
-            // Someone else wrote to the clipboard during the paste window;
-            // they own it now, so restoring would clobber their content.
             return;
         }
 
         if (snapshot is { IsEmpty: false })
         {
-            // Restoring is best-effort; the injected text stays on the
-            // clipboard, which is a tolerable failure mode.
             ClipboardHelper.TryRestore(snapshot);
         }
         else if (snapshot is { IsEmpty: true })
         {
-            // The clipboard was empty before injection; clear it again so
-            // the transcript doesn't linger for other processes to read.
             ClipboardHelper.TryClear();
         }
     }
@@ -81,39 +71,56 @@ public sealed class ClipboardTextInjector : ITextInjector
             }
             catch
             {
-                // Best effort only; the original failure matters more.
             }
         }
 
-        return false; // Exception filter: never actually catch.
+        return false;
     }
 
-    private const ushort VkControl = 0x11;
-    private const ushort VkV = 0x56;
-    private const uint KeyeventfKeyup = 0x0002;
+    /// <summary>
+    /// Pastes via Shift+Insert (standard Windows paste, no "v" key). Falls back to
+    /// left-Ctrl+V only if SendInput fails entirely.
+    /// </summary>
+    private static void PasteFromClipboard()
+    {
+        SendShiftInsert();
+    }
 
-    private static void SendCtrlV()
+    private static void SendShiftInsert()
     {
         NativeInput.Input[] sequence =
         [
-            MakeKey(VkControl, down: true),
+            MakeKey(VkShift, down: true),
+            MakeKey(VkInsert, down: true),
+            MakeKey(VkInsert, down: false),
+            MakeKey(VkShift, down: false),
+        ];
+
+        if (NativeInput.Send(sequence) == sequence.Length)
+        {
+            return;
+        }
+
+        SendLeftCtrlV();
+    }
+
+    private static void SendLeftCtrlV()
+    {
+        NativeInput.Input[] sequence =
+        [
+            MakeKey(VkLControl, down: true),
             MakeKey(VkV, down: true),
             MakeKey(VkV, down: false),
-            MakeKey(VkControl, down: false),
+            MakeKey(VkLControl, down: false),
         ];
 
         uint injected = NativeInput.Send(sequence);
         if (injected != sequence.Length)
         {
             int error = Marshal.GetLastWin32Error();
-
-            // SendInput inserts a prefix of the sequence before failing. If
-            // Ctrl-down went in but Ctrl-up (the last event) did not, release
-            // Ctrl so the user's keyboard isn't left with a stuck modifier.
-            // Best effort: its own failure is ignored.
             if (injected >= 1)
             {
-                NativeInput.Input[] release = [MakeKey(VkControl, down: false)];
+                NativeInput.Input[] release = [MakeKey(VkLControl, down: false)];
                 NativeInput.Send(release);
             }
 
@@ -121,10 +128,18 @@ public sealed class ClipboardTextInjector : ITextInjector
         }
     }
 
-    private static NativeInput.Input MakeKey(ushort virtualKey, bool down) => new()
+    private static NativeInput.Input MakeKey(ushort virtualKey, bool down)
     {
-        Type = 1, // INPUT_KEYBOARD
-        VirtualKey = virtualKey,
-        Flags = down ? 0 : KeyeventfKeyup,
-    };
+        ushort scan = (ushort)MapVirtualKey(virtualKey, 0);
+        return new NativeInput.Input
+        {
+            Type = 1,
+            VirtualKey = virtualKey,
+            ScanCode = scan,
+            Flags = (down ? 0 : KeyeventfKeyup) | (scan != 0 ? KeyeventfScancode : 0),
+        };
+    }
+
+    [DllImport("user32.dll")]
+    private static extern uint MapVirtualKey(uint uCode, uint uMapType);
 }

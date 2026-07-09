@@ -36,6 +36,9 @@ public sealed class InputMethodRouter : ITextInjector
         }
         finally
         {
+            // Let the target app finish handling paste/keystrokes before releasing
+            // modifiers — an immediate ReleaseAll can cancel Ctrl before V is processed.
+            await Task.Delay(50).ConfigureAwait(false);
             ModifierRelease.ReleaseAll();
         }
     }
@@ -44,14 +47,15 @@ public sealed class InputMethodRouter : ITextInjector
     {
         InputMethod.Paste => InputMethod.Paste,
         InputMethod.Type => InputMethod.Type,
-        _ => IsTerminalLikeTarget() ? InputMethod.Type : InputMethod.Paste,
+        _ => PrefersKeystrokeInjection() ? InputMethod.Type : InputMethod.Paste,
     };
 
     /// <summary>
-    /// True when the focused window belongs to a terminal or Electron-based editor,
-    /// where synthetic paste is unreliable and keystroke typing should be used instead.
+    /// True when synthetic Ctrl+V is unreliable (terminals, Electron, browsers).
+    /// Those apps often swallow the Ctrl modifier but still accept the V key,
+    /// which produces a lone "v" instead of a paste — or block SendInput entirely.
     /// </summary>
-    private static bool IsTerminalLikeTarget()
+    private static bool PrefersKeystrokeInjection()
     {
         try
         {
@@ -68,7 +72,7 @@ public sealed class InputMethodRouter : ITextInjector
             }
 
             string name = Process.GetProcessById((int)pid).ProcessName;
-            return TerminalProcessNames.Contains(name);
+            return KeystrokeInjectionProcessNames.Contains(name);
         }
         catch
         {
@@ -76,16 +80,23 @@ public sealed class InputMethodRouter : ITextInjector
         }
     }
 
-    // Electron editors/terminals and classic consoles. The Cursor/Code entries
-    // cover their integrated terminals (typing in the editor itself also works
-    // fine with keystrokes, so this is a safe over-approximation).
-    private static readonly HashSet<string> TerminalProcessNames = new(StringComparer.OrdinalIgnoreCase)
+    // Terminals, Electron apps, and browsers where synthetic Ctrl+V often drops the
+    // Ctrl modifier (user sees a lone "v") or is blocked entirely. Unicode typing
+    // via KEYEVENTF_UNICODE works in their text fields.
+    private static readonly HashSet<string> KeystrokeInjectionProcessNames = new(StringComparer.OrdinalIgnoreCase)
     {
+        // Terminals & shells
         "Cursor", "Code", "Code - Insiders", "VSCodium", "Claude",
         "WindowsTerminal", "OpenConsole", "conhost",
         "cmd", "powershell", "pwsh", "pwsh-preview",
         "mintty", "alacritty", "wezterm-gui", "hyper", "Tabby",
         "FluentTerminal", "Terminus", "kitty", "foot", "warp",
+        // Chat & collaboration (Electron)
+        "Slack", "Discord", "Teams", "ms-teams", "Zoom", "Telegram",
+        // Browsers
+        "chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "Arc",
+        // Other Electron / web wrappers
+        "Notion", "WhatsApp", "Signal", "Postman", "figma", "Linear",
     };
 
     [DllImport("user32.dll")]
