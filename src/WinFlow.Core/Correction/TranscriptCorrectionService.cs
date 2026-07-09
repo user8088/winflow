@@ -63,6 +63,16 @@ public sealed class TranscriptCorrectionService
 
             corrected = corrected.Trim();
 
+            // Guard against drastic truncation (e.g. a misbehaving LLM stopping
+            // after one token would otherwise replace the whole dictation).
+            // Aggressive correction legitimately shortens text by removing
+            // fillers, so the floor is generous: reject only when a non-trivial
+            // input (> 20 chars) shrinks below 40% of its original length.
+            if (raw.Length > 20 && corrected.Length < raw.Length * 2 / 5)
+            {
+                return raw;
+            }
+
             // Guard against runaway expansion (max 2× original length + 100 chars).
             int maxLen = Math.Max(raw.Length * 2 + 100, 500);
             if (corrected.Length > maxLen)

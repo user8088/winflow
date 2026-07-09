@@ -60,7 +60,7 @@ public partial class App : Application
 
         var credentials = new WindowsCredentialStore();
         var settingsStore = new SettingsStore();
-        AppSettings settings = settingsStore.Load();
+        AppSettings settings = settingsStore.Current;
 
         var coordinator = new RecordingCoordinator();
         _hotkeys = new LowLevelKeyboardHookProvider(allowInjected: allowInjected);
@@ -75,7 +75,7 @@ public partial class App : Application
             cloudAvailable: () => hasApiKey,
             localAvailable: () => _modelManager.IsInstalled(LocalModelCatalog.Default));
         modeController.BackendChanged += _ =>
-            settingsStore.Save(settings with { SttMode = modeController.ConfiguredMode });
+            settingsStore.Update(s => s with { SttMode = modeController.ConfiguredMode });
 
         IStreamingSttProvider streaming;
         IBatchSttProvider batch;
@@ -144,7 +144,6 @@ public partial class App : Application
             correctionMode,
             _modelManager,
             settingsStore,
-            settings,
             inputRouter,
             ExitApplication);
 

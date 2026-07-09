@@ -32,7 +32,6 @@ public sealed class TrayIconController : IDisposable
     private readonly LocalModelManager _modelManager;
     private readonly SettingsStore _settingsStore;
     private readonly InputMethodRouter _inputRouter;
-    private AppSettings _settings;
     private readonly MenuItem _cloudItem;
     private readonly MenuItem _localItem;
     private readonly MenuItem _autoItem;
@@ -52,7 +51,6 @@ public sealed class TrayIconController : IDisposable
         CorrectionModeController correctionMode,
         LocalModelManager modelManager,
         SettingsStore settingsStore,
-        AppSettings settings,
         InputMethodRouter inputRouter,
         Action onExit)
     {
@@ -60,7 +58,6 @@ public sealed class TrayIconController : IDisposable
         _correctionMode = correctionMode;
         _modelManager = modelManager;
         _settingsStore = settingsStore;
-        _settings = settings;
         _inputRouter = inputRouter;
 
         var menu = new ContextMenu();
@@ -73,9 +70,8 @@ public sealed class TrayIconController : IDisposable
         offline.Click += (_, _) =>
         {
             var window = new LocalModelWindow(
-                _modelManager, _settingsStore, _settings, onInstalledChanged: RefreshLocalEnabled);
+                _modelManager, _settingsStore, onInstalledChanged: RefreshLocalEnabled);
             window.ShowDialog();
-            _settings = window.Settings;
         };
         menu.Items.Add(offline);
 
@@ -83,9 +79,8 @@ public sealed class TrayIconController : IDisposable
         correctionModel.Click += (_, _) =>
         {
             var window = new LocalModelWindow(
-                _modelManager, _settingsStore, _settings, LocalModelCatalog.Qwen25Correction);
+                _modelManager, _settingsStore, LocalModelCatalog.Qwen25Correction);
             window.ShowDialog();
-            _settings = window.Settings;
         };
         menu.Items.Add(correctionModel);
 
@@ -229,16 +224,14 @@ public sealed class TrayIconController : IDisposable
     private void SetInputMethod(InputMethod method)
     {
         _inputRouter.Method = method;
-        _settings = _settings with { InputMethod = method };
-        _settingsStore.Save(_settings);
+        _settingsStore.Update(s => s with { InputMethod = method });
         RefreshInputChecks();
     }
 
     private void SetCorrectionMode(CorrectionMode mode)
     {
         _correctionMode.Mode = mode;
-        _settings = _settings with { CorrectionMode = mode };
-        _settingsStore.Save(_settings);
+        _settingsStore.Update(s => s with { CorrectionMode = mode });
         RefreshCorrectionChecks();
     }
 

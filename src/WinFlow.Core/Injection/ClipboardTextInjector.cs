@@ -5,42 +5,42 @@ namespace WinFlow.Core.Injection;
 
 /// <summary>
 /// Injects text by placing it on the clipboard, synthesizing Ctrl+V, and
-/// restoring the previous clipboard text afterwards. The broadest-compat
+/// restoring the previous clipboard contents afterwards. The broadest-compat
 /// strategy — works in terminals, browsers, and Electron apps where
-/// programmatic text APIs don't.
-///
-/// M1 limitation: only CF_UNICODETEXT is saved/restored, so a copied
-/// image or file list is lost. The strategy table in M2 narrows how often
-/// this path runs at all.
+/// programmatic text APIs don't. All duplicable clipboard formats (images,
+/// file lists, HTML/RTF, registered formats) are snapshotted and restored,
+/// not just plain text.
 /// </summary>
 public sealed class ClipboardTextInjector : ITextInjector
 {
     /// <summary>
     /// How long the target app gets to service the paste before the
-    /// previous clipboard text is restored.
+    /// previous clipboard contents are restored.
     /// </summary>
     private static readonly TimeSpan RestoreDelay = TimeSpan.FromMilliseconds(300);
 
     public async Task InjectAsync(string text, CancellationToken cancellationToken = default)
     {
-        string? previous = ClipboardHelper.TryGetText();
+        if (ElevatedTargetDetector.IsInjectionBlockedByUipi())
+        {
+            // UIPI would silently drop the synthesized Ctrl+V. Leave the
+            // transcript on the clipboard (no restore) so nothing is lost.
+            ClipboardHelper.SetText(text);
+            throw new InvalidOperationException(ElevatedTargetDetector.BlockedMessage);
+        }
+
+        ClipboardSnapshot? snapshot = ClipboardHelper.TrySnapshot();
 
         ClipboardHelper.SetText(text);
         SendCtrlV();
 
         await Task.Delay(RestoreDelay, cancellationToken).ConfigureAwait(false);
 
-        if (!string.IsNullOrEmpty(previous))
+        if (snapshot is { IsEmpty: false })
         {
-            try
-            {
-                ClipboardHelper.SetText(previous);
-            }
-            catch
-            {
-                // Restoring is best-effort; the injected text stays on the
-                // clipboard, which is a tolerable failure mode.
-            }
+            // Restoring is best-effort; the injected text stays on the
+            // clipboard, which is a tolerable failure mode.
+            ClipboardHelper.TryRestore(snapshot);
         }
     }
 

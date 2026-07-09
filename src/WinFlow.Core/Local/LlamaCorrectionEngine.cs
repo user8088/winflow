@@ -53,7 +53,7 @@ public sealed class LlamaCorrectionEngine : ITranscriptCorrector, IDisposable
             var inferenceParams = new InferenceParams
             {
                 MaxTokens = 256,
-                AntiPrompts = ["", "\n\n"],
+                AntiPrompts = ["<|im_end|>", "\n\n"],
             };
 
             var output = new System.Text.StringBuilder();
