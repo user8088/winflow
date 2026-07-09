@@ -61,6 +61,15 @@ public partial class HudWindow : Window
         Loaded += (_, _) => PositionBottomCenter();
     }
 
+    public void PrepareOverlay()
+    {
+        // Create the HWND once at startup so the first recording does not pay
+        // first-show window initialization on the hot path.
+        PositionBottomCenter();
+        Show();
+        Hide();
+    }
+
     public void ShowRecording()
     {
         _hideTimer.Stop();

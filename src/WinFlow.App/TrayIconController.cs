@@ -182,6 +182,14 @@ public sealed class TrayIconController : IDisposable
         _trayIcon.ShowNotification("WinFlow is running", tip, NotificationIcon.Info);
     }
 
+    public void ShowReadyNotification()
+    {
+        _trayIcon.ShowNotification(
+            "WinFlow is ready",
+            "First-time setup finished. Hold Right Ctrl to dictate.",
+            NotificationIcon.Info);
+    }
+
     private void UpdateState(RecordingState state)
     {
         bool local = _mode.ResolvedBackend == SttBackend.Local;

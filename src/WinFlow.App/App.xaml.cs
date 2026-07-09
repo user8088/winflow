@@ -37,6 +37,7 @@ public partial class App : Application
     private LlamaCorrectionEngine? _localCorrection;
     private HudController? _hud;
     private TrayIconController? _tray;
+    private StartupWarmup? _startupWarmup;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -164,11 +165,21 @@ public partial class App : Application
             _realtime?.WarmUpInBackground();
         }
 
+        _startupWarmup = new StartupWarmup(
+            _audio,
+            fakeStt ? null : _realtime,
+            fakeStt ? null : _localStt,
+            fakeStt ? null : _localCorrection,
+            _modelManager,
+            () => correctionMode.Mode,
+            fakeStt ? null : modeController);
+
         try
         {
             SystemEvents.SessionSwitch += OnSessionSwitch;
             _hotkeys.Start();
             _tray.ShowWelcome(hasApiKey, _modelManager.IsInstalled(LocalModelCatalog.Default));
+            BeginStartupWarmupNotification();
         }
         catch (Exception exception)
         {
@@ -209,6 +220,31 @@ public partial class App : Application
                     MessageBoxImage.Error);
             }
         };
+    }
+
+    private void BeginStartupWarmupNotification()
+    {
+        if (_startupWarmup is null || _tray is null)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            var started = DateTime.UtcNow;
+            try
+            {
+                await _startupWarmup.WhenReadyAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+
+            if (DateTime.UtcNow - started > TimeSpan.FromSeconds(2))
+            {
+                _tray.ShowReadyNotification();
+            }
+        });
     }
 
     private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)

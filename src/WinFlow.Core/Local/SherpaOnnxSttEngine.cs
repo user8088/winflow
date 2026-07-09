@@ -36,6 +36,31 @@ public sealed class SherpaOnnxSttEngine : IBatchSttProvider, IDisposable
         _model = model ?? LocalModelCatalog.Default;
     }
 
+    /// <summary>Loads the ONNX recognizer on a background thread so the first real dictation skips the ~1–2 s cold start.</summary>
+    public Task WarmUpAsync(CancellationToken cancellationToken = default)
+    {
+        if (_disposed || !_manager.IsInstalled(_model))
+        {
+            return Task.CompletedTask;
+        }
+
+        return Task.Run(async () =>
+        {
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (!_disposed)
+                {
+                    _recognizer ??= BuildRecognizer();
+                }
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }, cancellationToken);
+    }
+
     public Task<string> TranscribeAsync(CapturedAudio audio, CancellationToken cancellationToken = default)
     {
         if (_disposed)
@@ -100,7 +125,7 @@ public sealed class SherpaOnnxSttEngine : IBatchSttProvider, IDisposable
                     Decoder = Path.Combine(dir, "decoder.int8.onnx"),
                     Joiner = Path.Combine(dir, "joiner.int8.onnx"),
                 },
-                NumThreads = Math.Max(1, Environment.ProcessorCount / 2),
+                NumThreads = Math.Max(1, Environment.ProcessorCount),
                 ModelType = _model.ModelType,
                 Debug = 0,
                 Provider = "cpu",

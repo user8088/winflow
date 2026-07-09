@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using WinFlow.Core.Abstractions;
 using WinFlow.Core.Models;
 
@@ -12,6 +13,9 @@ namespace WinFlow.Core.Correction;
 public sealed class TranscriptCorrectionService
 {
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(8);
+
+    private const int ChunkedCorrectionThreshold = 2000;
+    private const int MaxChunkChars = 1500;
 
     private readonly Func<CorrectionMode> _modeProvider;
     private readonly ITranscriptCorrector? _corrector;
@@ -49,12 +53,49 @@ public sealed class TranscriptCorrectionService
             return raw;
         }
 
+        if (raw.Length > ChunkedCorrectionThreshold)
+        {
+            return await ProcessChunkedAsync(raw, intensity, cancellationToken).ConfigureAwait(false);
+        }
+
+        return await CorrectOnceAsync(raw, intensity, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<string> ProcessChunkedAsync(
+        string raw,
+        CorrectionIntensity intensity,
+        CancellationToken cancellationToken)
+    {
+        List<string> chunks = SplitIntoChunks(raw, MaxChunkChars);
+        if (chunks.Count <= 1)
+        {
+            return await CorrectOnceAsync(raw, intensity, cancellationToken).ConfigureAwait(false);
+        }
+
+        var corrected = new string[chunks.Count];
+        for (int i = 0; i < chunks.Count; i++)
+        {
+            corrected[i] = await CorrectOnceAsync(chunks[i], intensity, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return string.Join(" ", corrected);
+    }
+
+    private async Task<string> CorrectOnceAsync(
+        string raw,
+        CorrectionIntensity intensity,
+        CancellationToken cancellationToken)
+    {
         try
         {
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(_timeout);
+            TimeSpan effectiveTimeout = _timeout
+                + TimeSpan.FromSeconds(Math.Min(raw.Length / 150.0, 45));
 
-            string corrected = await _corrector
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(effectiveTimeout);
+
+            string corrected = await _corrector!
                 .CorrectAsync(raw, intensity, timeoutCts.Token)
                 .ConfigureAwait(false);
 
@@ -63,8 +104,6 @@ public sealed class TranscriptCorrectionService
                 return raw;
             }
 
-            // The model is instructed to return only the corrected text;
-            // unwrap cosmetic wrappers and reject contract violations.
             string? sanitized = SanitizeModelOutput(corrected);
             if (string.IsNullOrWhiteSpace(sanitized))
             {
@@ -73,17 +112,11 @@ public sealed class TranscriptCorrectionService
 
             corrected = sanitized;
 
-            // Guard against drastic truncation (e.g. a misbehaving LLM stopping
-            // after one token would otherwise replace the whole dictation).
-            // Aggressive correction legitimately shortens text by removing
-            // fillers, so the floor is generous: reject only when a non-trivial
-            // input (> 20 chars) shrinks below 40% of its original length.
             if (raw.Length > 20 && corrected.Length < raw.Length * 2 / 5)
             {
                 return raw;
             }
 
-            // Guard against runaway expansion (max 2× original length + 100 chars).
             int maxLen = Math.Max(raw.Length * 2 + 100, 500);
             if (corrected.Length > maxLen)
             {
@@ -99,15 +132,90 @@ public sealed class TranscriptCorrectionService
         }
     }
 
+    internal static List<string> SplitIntoChunks(string text, int maxChunkChars)
+    {
+        var chunks = new List<string>();
+        var current = new StringBuilder();
+
+        foreach (string sentence in SplitSentences(text))
+        {
+            if (sentence.Length > maxChunkChars)
+            {
+                FlushCurrent();
+                foreach (string hardPart in HardSplit(sentence, maxChunkChars))
+                {
+                    chunks.Add(hardPart);
+                }
+
+                continue;
+            }
+
+            if (current.Length > 0 && current.Length + sentence.Length + 1 > maxChunkChars)
+            {
+                FlushCurrent();
+            }
+
+            if (current.Length > 0)
+            {
+                current.Append(' ');
+            }
+
+            current.Append(sentence);
+        }
+
+        FlushCurrent();
+        return chunks;
+
+        void FlushCurrent()
+        {
+            if (current.Length == 0)
+            {
+                return;
+            }
+
+            chunks.Add(current.ToString().Trim());
+            current.Clear();
+        }
+    }
+
+    private static IEnumerable<string> SplitSentences(string text)
+    {
+        var current = new StringBuilder();
+        for (int i = 0; i < text.Length; i++)
+        {
+            char c = text[i];
+            current.Append(c);
+
+            if (c is '.' or '!' or '?' or '\n' or '\r')
+            {
+                string sentence = current.ToString().Trim();
+                if (sentence.Length > 0)
+                {
+                    yield return sentence;
+                }
+
+                current.Clear();
+            }
+        }
+
+        string tail = current.ToString().Trim();
+        if (tail.Length > 0)
+        {
+            yield return tail;
+        }
+    }
+
+    private static IEnumerable<string> HardSplit(string text, int maxChunkChars)
+    {
+        for (int i = 0; i < text.Length; i += maxChunkChars)
+        {
+            int length = Math.Min(maxChunkChars, text.Length - i);
+            yield return text.Substring(i, length).Trim();
+        }
+    }
+
     private static readonly string[] ChattyPreambles = ["here is", "sure", "the corrected"];
 
-    /// <summary>
-    /// Unwraps cosmetic wrappers the model may add despite instructions
-    /// (markdown code fences, one pair of enclosing matched quotes) and
-    /// returns null when the output starts with a chatty preamble — that
-    /// violates the "output only the corrected text" contract, so the
-    /// caller must fall back to the raw transcript.
-    /// </summary>
     private static string? SanitizeModelOutput(string corrected)
     {
         string text = corrected.Trim();
@@ -118,7 +226,6 @@ public sealed class TranscriptCorrectionService
         {
             text = text[3..^3];
 
-            // Drop a language tag on the opening fence line (e.g. ```text).
             int newline = text.IndexOf('\n');
             if (newline >= 0 && IsFenceLanguageTag(text.AsSpan(0, newline).TrimEnd()))
             {
@@ -137,8 +244,6 @@ public sealed class TranscriptCorrectionService
                 || (first == '\'' && last == '\'')
                 || (first == '\u201C' && last == '\u201D');
 
-            // Only unwrap when the quote characters do not also appear
-            // inside, so legitimately quoted dictation is left intact.
             if (matchedQuotes)
             {
                 ReadOnlySpan<char> interior = text.AsSpan(1, text.Length - 2);

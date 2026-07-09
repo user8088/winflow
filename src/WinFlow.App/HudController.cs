@@ -13,6 +13,8 @@ public sealed class HudController : IDisposable
 
     public HudController(DictationPipeline pipeline, RecordingCoordinator coordinator)
     {
+        UiDispatcher.RunOnUiThread(() => _hud.PrepareOverlay());
+
         coordinator.StateChanged += state => UiDispatcher.RunOnUiThread(() =>
         {
             switch (state)

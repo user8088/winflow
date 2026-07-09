@@ -29,6 +29,31 @@ public sealed class LlamaCorrectionEngine : ITranscriptCorrector, IDisposable
         _model = model ?? LocalModelCatalog.Qwen25Correction;
     }
 
+    /// <summary>Loads the GGUF weights on a background thread so the first correction skips the ~1–2 s cold start.</summary>
+    public Task WarmUpAsync(CancellationToken cancellationToken = default)
+    {
+        if (_disposed || !_manager.IsInstalled(_model))
+        {
+            return Task.CompletedTask;
+        }
+
+        return Task.Run(async () =>
+        {
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (!_disposed)
+                {
+                    _runtime ??= BuildRuntime();
+                }
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }, cancellationToken);
+    }
+
     public Task<string> CorrectAsync(
         string transcript,
         CorrectionIntensity intensity,
@@ -69,9 +94,10 @@ public sealed class LlamaCorrectionEngine : ITranscriptCorrector, IDisposable
                     $"<|im_start|>user\n{userMessage}<|im_end|>\n" +
                     "<|im_start|>assistant\n";
 
+                int maxTokens = Math.Clamp(transcript.Length / 3 * 2, 256, 2048);
                 var inferenceParams = new InferenceParams
                 {
-                    MaxTokens = 256,
+                    MaxTokens = maxTokens,
                     AntiPrompts = ["<|im_end|>", "\n\n"],
                 };
 
@@ -107,7 +133,7 @@ public sealed class LlamaCorrectionEngine : ITranscriptCorrector, IDisposable
 
         var parameters = new ModelParams(modelPath)
         {
-            ContextSize = 2048,
+            ContextSize = 4096,
             GpuLayerCount = 0,
         };
 

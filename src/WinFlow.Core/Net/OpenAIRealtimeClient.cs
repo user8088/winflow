@@ -111,6 +111,31 @@ public sealed class OpenAIRealtimeClient : IStreamingSttProvider, IDisposable
         });
     }
 
+    /// <summary>Waits until a warm backup socket is ready or warmup has finished trying.</summary>
+    public async Task WaitForBackupAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(timeout);
+
+        while (!timeoutCts.Token.IsCancellationRequested)
+        {
+            lock (_gate)
+            {
+                if (_backup?.State == WebSocketState.Open)
+                {
+                    return;
+                }
+
+                if (!_warmupInFlight)
+                {
+                    return;
+                }
+            }
+
+            await Task.Delay(50, timeoutCts.Token).ConfigureAwait(false);
+        }
+    }
+
     public void Dispose()
     {
         lock (_gate)

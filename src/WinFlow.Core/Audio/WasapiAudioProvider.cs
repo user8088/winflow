@@ -46,6 +46,31 @@ public sealed class WasapiAudioProvider : IAudioProvider
 
     public event Action<AudioChunk>? ChunkAvailable;
 
+    /// <summary>
+    /// Opens and immediately closes the default capture device so the first
+    /// real dictation skips WASAPI activation and NAudio cold-start cost.
+    /// </summary>
+    public async Task WarmUpDeviceAsync(CancellationToken cancellationToken = default)
+    {
+        lock (_gate)
+        {
+            if (_capture is not null)
+            {
+                return;
+            }
+        }
+
+        try
+        {
+            await StartAsync(cancellationToken).ConfigureAwait(false);
+            await StopAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Best-effort; the first dictation will retry device activation.
+        }
+    }
+
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
         // Device activation can block for tens of milliseconds; keep it off the caller's thread.

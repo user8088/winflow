@@ -160,28 +160,38 @@ public sealed class DictationPipeline : IDisposable
             return;
         }
 
+        Channel<byte[]>? channel = null;
+        Task<IStreamingSttSession>? sessionTask = null;
+        Task? forwardingTask = null;
+        Task audioTask = _audio.StartAsync();
+
+        if (_streaming is not null)
+        {
+            channel = Channel.CreateUnbounded<byte[]>(
+                new UnboundedChannelOptions { SingleReader = true });
+            _chunkChannel = channel;
+            sessionTask = Task.Run(() => _streaming.OpenSessionAsync());
+            _sessionTask = sessionTask;
+            forwardingTask = Task.Run(() => ForwardChunksAsync(channel.Reader, sessionTask));
+            _forwardingTask = forwardingTask;
+        }
+
         try
         {
-            await _audio.StartAsync().ConfigureAwait(false);
+            await audioTask.ConfigureAwait(false);
         }
         catch (Exception exception)
         {
+            channel?.Writer.TryComplete();
+            _chunkChannel = null;
+            _sessionTask = null;
+            _forwardingTask = null;
+            DiscardStreamingInBackground(sessionTask, forwardingTask);
+
             _coordinator.TryTransition(RecordingState.Recording, RecordingState.Idle);
             DictationFailed?.Invoke(new DictationFailure(
                 DictationFailureKind.CaptureFailed, exception.GetBaseException().Message));
             return;
-        }
-
-        if (_streaming is not null)
-        {
-            // Open the session and forward chunks concurrently with capture;
-            // chunks buffered in the channel flush once the session is ready.
-            var channel = Channel.CreateUnbounded<byte[]>(
-                new UnboundedChannelOptions { SingleReader = true });
-            _chunkChannel = channel;
-            Task<IStreamingSttSession> sessionTask = Task.Run(() => _streaming.OpenSessionAsync());
-            _sessionTask = sessionTask;
-            _forwardingTask = Task.Run(() => ForwardChunksAsync(channel.Reader, sessionTask));
         }
 
         StartRecordingLimitTimer();
@@ -313,14 +323,14 @@ public sealed class DictationPipeline : IDisposable
 
         if (sessionTask is not null)
         {
-            racers.Add(FinishStreamingAsync(sessionTask, forwardingTask, raceCancellation.Token));
+            racers.Add(FinishStreamingAsync(captured, sessionTask, forwardingTask, raceCancellation.Token));
         }
 
         CancellationTokenSource? batchTimeout = null;
         if (_batch is not null)
         {
             batchTimeout = CancellationTokenSource.CreateLinkedTokenSource(raceCancellation.Token);
-            batchTimeout.CancelAfter(_options.BatchTimeout);
+            batchTimeout.CancelAfter(BatchTimeoutFor(captured));
             racers.Add(_batch.TranscribeAsync(captured, batchTimeout.Token));
         }
 
@@ -362,6 +372,7 @@ public sealed class DictationPipeline : IDisposable
     }
 
     private async Task<string> FinishStreamingAsync(
+        CapturedAudio captured,
         Task<IStreamingSttSession> sessionTask,
         Task? forwardingTask,
         CancellationToken cancellationToken)
@@ -387,7 +398,7 @@ public sealed class DictationPipeline : IDisposable
             {
                 return await session
                     .FinishAsync(cancellationToken)
-                    .WaitAsync(_options.StreamingFinishTimeout, cancellationToken)
+                    .WaitAsync(StreamingFinishTimeoutFor(captured), cancellationToken)
                     .ConfigureAwait(false);
             }
             finally
@@ -402,14 +413,44 @@ public sealed class DictationPipeline : IDisposable
         }
     }
 
+    private TimeSpan StreamingFinishTimeoutFor(CapturedAudio captured)
+    {
+        double extraSeconds = Math.Min(captured.Duration.TotalSeconds * 0.5, 90);
+        return _options.StreamingFinishTimeout + TimeSpan.FromSeconds(extraSeconds);
+    }
+
+    private TimeSpan BatchTimeoutFor(CapturedAudio captured)
+    {
+        double extraSeconds = Math.Min(captured.Duration.TotalSeconds, 120);
+        return _options.BatchTimeout + TimeSpan.FromSeconds(extraSeconds);
+    }
+
     private static async Task ForwardChunksAsync(
         ChannelReader<byte[]> chunks,
         Task<IStreamingSttSession> sessionTask)
     {
         IStreamingSttSession session = await sessionTask.ConfigureAwait(false);
+
+        // Coalesce ~1 s capture chunks into larger WebSocket frames so long
+        // dictations spend less time flushing audio after key release.
+        const int FlushThresholdBytes = WasapiAudioProvider.TargetSampleRate * 2 * 3;
+        using var pending = new MemoryStream(FlushThresholdBytes);
+
         await foreach (byte[] chunk in chunks.ReadAllAsync().ConfigureAwait(false))
         {
-            await session.SendAudioAsync(chunk).ConfigureAwait(false);
+            pending.Write(chunk);
+            if (pending.Length >= FlushThresholdBytes)
+            {
+                await session.SendAudioAsync(pending.GetBuffer().AsMemory(0, (int)pending.Length))
+                    .ConfigureAwait(false);
+                pending.SetLength(0);
+            }
+        }
+
+        if (pending.Length > 0)
+        {
+            await session.SendAudioAsync(pending.GetBuffer().AsMemory(0, (int)pending.Length))
+                .ConfigureAwait(false);
         }
     }
 
