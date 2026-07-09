@@ -163,8 +163,13 @@ public sealed class TrayIconController : IDisposable
         };
         _trayIcon.ForceCreate();
 
-        coordinator.StateChanged += state => RunOnUiThread(() => UpdateState(state));
-        pipeline.DictationFailed += failure => RunOnUiThread(() => OnDictationFailed(failure));
+        coordinator.StateChanged += state => UiDispatcher.RunOnUiThread(() => UpdateState(state));
+        pipeline.DictationFailed += failure => UiDispatcher.RunOnUiThread(() => OnDictationFailed(failure));
+        pipeline.RecordingDurationCapped += limit => UiDispatcher.RunOnUiThread(() =>
+            _trayIcon.ShowNotification(
+                "WinFlow",
+                $"Recording stopped after {limit.TotalMinutes:0} minutes — maximum length reached.",
+                NotificationIcon.Warning));
     }
 
     public void ShowWelcome(bool hasApiKey, bool localAvailable)
@@ -271,19 +276,6 @@ public sealed class TrayIconController : IDisposable
         }
 
         _trayIcon.ShowNotification("WinFlow", failure.Message, NotificationIcon.Warning);
-    }
-
-    private static void RunOnUiThread(Action action)
-    {
-        var dispatcher = Application.Current?.Dispatcher;
-        if (dispatcher is null || dispatcher.CheckAccess())
-        {
-            action();
-        }
-        else
-        {
-            dispatcher.BeginInvoke(action);
-        }
     }
 
     public void Dispose()

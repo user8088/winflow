@@ -10,8 +10,6 @@ namespace WinFlow.Core.Services;
 ///   Recording → Processing      (hotkey released)
 ///   Recording → Idle            (cancelled / capture failed)
 ///   Processing → Idle           (completed or failed)
-///   Processing → InjectionFailed
-///   InjectionFailed → Idle      (re-paste or dismissal)
 /// </summary>
 public sealed class RecordingCoordinator
 {
@@ -21,8 +19,6 @@ public sealed class RecordingCoordinator
         (RecordingState.Recording, RecordingState.Processing),
         (RecordingState.Recording, RecordingState.Idle),
         (RecordingState.Processing, RecordingState.Idle),
-        (RecordingState.Processing, RecordingState.InjectionFailed),
-        (RecordingState.InjectionFailed, RecordingState.Idle),
     ];
 
     private readonly Lock _gate = new();

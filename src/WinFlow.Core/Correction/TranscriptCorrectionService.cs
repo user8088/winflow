@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using WinFlow.Core.Abstractions;
 using WinFlow.Core.Models;
 
@@ -85,13 +87,14 @@ public sealed class TranscriptCorrectionService
             int maxLen = Math.Max(raw.Length * 2 + 100, 500);
             if (corrected.Length > maxLen)
             {
-                corrected = corrected[..maxLen].TrimEnd();
+                corrected = TruncateToMaxChars(corrected, maxLen).TrimEnd();
             }
 
             return corrected;
         }
-        catch
+        catch (Exception exception)
         {
+            Debug.WriteLine($"Transcript correction failed: {exception}");
             return raw;
         }
     }
@@ -155,6 +158,26 @@ public sealed class TranscriptCorrectionService
         }
 
         return text;
+    }
+
+    private static string TruncateToMaxChars(string text, int maxChars)
+    {
+        if (text.Length <= maxChars)
+        {
+            return text;
+        }
+
+        var info = new StringInfo(text);
+        for (int elements = info.LengthInTextElements; elements > 0; elements--)
+        {
+            string candidate = info.SubstringByTextElements(0, elements);
+            if (candidate.Length <= maxChars)
+            {
+                return candidate;
+            }
+        }
+
+        return string.Empty;
     }
 
     private static bool IsFenceLanguageTag(ReadOnlySpan<char> line)

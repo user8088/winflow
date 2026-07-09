@@ -10,8 +10,6 @@ public class RecordingCoordinatorTests
     [InlineData(RecordingState.Recording, RecordingState.Processing)]
     [InlineData(RecordingState.Recording, RecordingState.Idle)]
     [InlineData(RecordingState.Processing, RecordingState.Idle)]
-    [InlineData(RecordingState.Processing, RecordingState.InjectionFailed)]
-    [InlineData(RecordingState.InjectionFailed, RecordingState.Idle)]
     public void AllowsValidTransitions(RecordingState from, RecordingState to)
     {
         var coordinator = new RecordingCoordinator();
@@ -23,10 +21,7 @@ public class RecordingCoordinatorTests
 
     [Theory]
     [InlineData(RecordingState.Idle, RecordingState.Processing)]
-    [InlineData(RecordingState.Idle, RecordingState.InjectionFailed)]
-    [InlineData(RecordingState.Recording, RecordingState.InjectionFailed)]
     [InlineData(RecordingState.Processing, RecordingState.Recording)]
-    [InlineData(RecordingState.InjectionFailed, RecordingState.Recording)]
     public void RejectsInvalidTransitions(RecordingState from, RecordingState to)
     {
         var coordinator = new RecordingCoordinator();
@@ -108,11 +103,6 @@ public class RecordingCoordinatorTests
             case RecordingState.Processing:
                 coordinator.TryTransition(RecordingState.Idle, RecordingState.Recording);
                 coordinator.TryTransition(RecordingState.Recording, RecordingState.Processing);
-                return;
-            case RecordingState.InjectionFailed:
-                coordinator.TryTransition(RecordingState.Idle, RecordingState.Recording);
-                coordinator.TryTransition(RecordingState.Recording, RecordingState.Processing);
-                coordinator.TryTransition(RecordingState.Processing, RecordingState.InjectionFailed);
                 return;
         }
     }

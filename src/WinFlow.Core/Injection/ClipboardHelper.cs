@@ -16,7 +16,6 @@ public static class ClipboardHelper
     private const uint CfUnicodeText = 13;
     private const uint GmemMoveable = 0x0002;
     private const int OpenRetries = 10;
-    private const int OpenRetryDelayMs = 15;
 
     // Handle-based formats whose HGLOBAL bytes cannot be duplicated safely
     // (HBITMAP/HPALETTE/HENHMETAFILE handles, owner-rendered data), plus
@@ -363,6 +362,7 @@ public static class ClipboardHelper
 
     private static bool OpenWithRetry()
     {
+        var spinWait = new SpinWait();
         for (int attempt = 0; attempt < OpenRetries; attempt++)
         {
             if (OpenClipboard(0))
@@ -370,7 +370,13 @@ public static class ClipboardHelper
                 return true;
             }
 
-            Thread.Sleep(OpenRetryDelayMs);
+            if (attempt < OpenRetries - 1)
+            {
+                // SpinWait yields quickly on early failures and only backs
+                // off to Thread.Sleep(1) after brief spinning — avoids the
+                // fixed 15 ms Thread.Sleep block per failed attempt.
+                spinWait.SpinOnce();
+            }
         }
 
         return false;

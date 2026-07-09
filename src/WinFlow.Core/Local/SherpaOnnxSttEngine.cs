@@ -1,5 +1,6 @@
 using SherpaOnnx;
 using WinFlow.Core.Abstractions;
+using WinFlow.Core.Audio;
 using WinFlow.Core.Local.Models;
 using WinFlow.Core.Models;
 
@@ -59,9 +60,9 @@ public sealed class SherpaOnnxSttEngine : IBatchSttProvider, IDisposable
                 // instead of rethrowing a cached exception (unlike Lazy<T>).
                 OfflineRecognizer recognizer = _recognizer ??= BuildRecognizer();
 
-                OfflineStream stream = recognizer.CreateStream();
+                using OfflineStream stream = recognizer.CreateStream();
 
-                float[] samples = ToFloatSamples(audio.Pcm16);
+                float[] samples = Pcm16Codec.ToFloatSamples(audio.Pcm16);
                 stream.AcceptWaveform(audio.SampleRate, samples);
 
                 recognizer.Decode(stream);
@@ -108,21 +109,8 @@ public sealed class SherpaOnnxSttEngine : IBatchSttProvider, IDisposable
         };
 
         var recognizer = new OfflineRecognizer(config);
-        // Warm the model now so the first real dictation doesn't pay load time.
+        // ONNX encoder/decoder/joiner load here on first TranscribeAsync call.
         return recognizer;
-    }
-
-    private static float[] ToFloatSamples(byte[] pcm16)
-    {
-        int sampleCount = pcm16.Length / 2;
-        float[] samples = new float[sampleCount];
-        for (int i = 0; i < sampleCount; i++)
-        {
-            short sample = (short)(pcm16[i * 2] | (pcm16[i * 2 + 1] << 8));
-            samples[i] = sample / 32768f;
-        }
-
-        return samples;
     }
 
     public void Dispose()

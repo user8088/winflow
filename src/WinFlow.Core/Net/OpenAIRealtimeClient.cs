@@ -27,6 +27,7 @@ public sealed class OpenAIRealtimeClient : IStreamingSttProvider, IDisposable
     private ClientWebSocket? _backup;
     private DateTime _backupOpenedAt;
     private bool _warmupInFlight;
+    private bool _disposed;
 
     public OpenAIRealtimeClient(
         Func<string?> apiKeyProvider,
@@ -68,7 +69,7 @@ public sealed class OpenAIRealtimeClient : IStreamingSttProvider, IDisposable
     {
         lock (_gate)
         {
-            if (_backup is not null || _warmupInFlight)
+            if (_disposed || _backup is not null || _warmupInFlight)
             {
                 return;
             }
@@ -78,13 +79,21 @@ public sealed class OpenAIRealtimeClient : IStreamingSttProvider, IDisposable
 
         _ = Task.Run(async () =>
         {
+            ClientWebSocket? socket = null;
             try
             {
-                ClientWebSocket socket = await ConnectAsync(CancellationToken.None).ConfigureAwait(false);
+                socket = await ConnectAsync(CancellationToken.None).ConfigureAwait(false);
                 lock (_gate)
                 {
+                    if (_disposed)
+                    {
+                        socket.Dispose();
+                        return;
+                    }
+
                     _backup = socket;
                     _backupOpenedAt = DateTime.UtcNow;
+                    socket = null;
                 }
             }
             catch
@@ -93,6 +102,7 @@ public sealed class OpenAIRealtimeClient : IStreamingSttProvider, IDisposable
             }
             finally
             {
+                socket?.Dispose();
                 lock (_gate)
                 {
                     _warmupInFlight = false;
@@ -105,6 +115,12 @@ public sealed class OpenAIRealtimeClient : IStreamingSttProvider, IDisposable
     {
         lock (_gate)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
             _backup?.Dispose();
             _backup = null;
         }

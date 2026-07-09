@@ -254,7 +254,6 @@ public sealed class LocalModelManager : IDisposable
             return false;
         }
 
-        // Non-LFS files (tokens.txt) have no pinned SHA256; size match is enough.
         if (file.Sha256 is null)
         {
             return true;

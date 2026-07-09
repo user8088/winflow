@@ -5,6 +5,7 @@
 //   dotnet run --project probes/LocalSttProbe -- "<path-to.wav>"
 using System.Diagnostics;
 using System.IO;
+using WinFlow.Core.Audio;
 using WinFlow.Core.Local;
 using WinFlow.Core.Local.Models;
 using WinFlow.Core.Models;
@@ -14,17 +15,24 @@ if (args.Length == 0)
     string recDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "WinFlow", "recordings");
-    args = Directory.Exists(recDir)
-        ? new[] { Directory.GetFiles(recDir, "*.wav").OrderByDescending(File.GetLastWriteTime).First() }
-        : throw new InvalidOperationException("Pass a WAV path, or record one first.");
+    string? latest = Directory.Exists(recDir)
+        ? Directory.GetFiles(recDir, "*.wav").OrderByDescending(File.GetLastWriteTime).FirstOrDefault()
+        : null;
+    if (latest is null)
+    {
+        throw new InvalidOperationException("Pass a WAV path, or record one first.");
+    }
+
+    args = new[] { latest };
 }
 
 string wavPath = args[0];
 Console.WriteLine($"Transcribing: {wavPath}");
 
 byte[] wav = File.ReadAllBytes(wavPath);
-// Strip the 44-byte canonical RIFF header written by WavEncoder.
-byte[] pcm16 = wav[44..];
+DecodedWav decoded = WavDecoder.Decode(wav);
+byte[] pcm16 = decoded.Pcm16;
+int sampleRate = decoded.SampleRate;
 
 var model = LocalModelCatalog.Default;
 using var manager = new LocalModelManager();
@@ -49,11 +57,11 @@ var engine = new SherpaOnnxSttEngine(manager, model);
 Console.WriteLine("Warming up model (first load)…");
 var warm = Stopwatch.StartNew();
 // First transcription loads the encoder; discard the result timing.
-_ = await engine.TranscribeAsync(new CapturedAudio(pcm16, 24000, TimeSpan.Zero, 0.05f));
+_ = await engine.TranscribeAsync(new CapturedAudio(pcm16, sampleRate, TimeSpan.Zero, 0.05f));
 Console.WriteLine($"Model warm in {warm.Elapsed.TotalSeconds:F1}s");
 
 var t = Stopwatch.StartNew();
-string transcript = await engine.TranscribeAsync(new CapturedAudio(pcm16, 24000, TimeSpan.Zero, 0.05f));
+string transcript = await engine.TranscribeAsync(new CapturedAudio(pcm16, sampleRate, TimeSpan.Zero, 0.05f));
 Console.WriteLine($"Transcribed in {t.Elapsed.TotalSeconds:F2}s");
 Console.WriteLine();
 Console.WriteLine($"TRANSCRIPT: \"{transcript}\"");

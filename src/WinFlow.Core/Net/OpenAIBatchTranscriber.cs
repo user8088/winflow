@@ -14,7 +14,10 @@ namespace WinFlow.Core.Net;
 /// </summary>
 public sealed class OpenAIBatchTranscriber : IBatchSttProvider
 {
-    private static readonly HttpClient Http = new() { Timeout = Timeout.InfiniteTimeSpan };
+    /// <summary>Matches <see cref="Services.DictationPipelineOptions.BatchTimeout"/> default.</summary>
+    internal static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(20);
+
+    private static readonly HttpClient Http = new() { Timeout = DefaultRequestTimeout };
 
     private readonly Func<string?> _apiKeyProvider;
     private readonly string _model;

@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using WinFlow.Core.Abstractions;
+using WinFlow.Core.Audio;
 using WinFlow.Core.Correction;
 using WinFlow.Core.Models;
 
@@ -18,6 +19,9 @@ public sealed class DictationPipelineOptions
 
     /// <summary>Deadline for the batch fallback after key release.</summary>
     public TimeSpan BatchTimeout { get; init; } = TimeSpan.FromSeconds(20);
+
+    /// <summary>Longest allowed hold; recording auto-stops when exceeded.</summary>
+    public TimeSpan MaxRecordingDuration { get; init; } = WasapiAudioProvider.DefaultMaxRecordingDuration;
 }
 
 /// <summary>
@@ -46,6 +50,7 @@ public sealed class DictationPipeline : IDisposable
     private Channel<byte[]>? _chunkChannel;
     private Task<IStreamingSttSession>? _sessionTask;
     private Task? _forwardingTask;
+    private CancellationTokenSource? _recordingLimitCts;
 
     /// <summary>Latest chunk RMS, for HUD metering. Raised on the capture thread.</summary>
     public event Action<float>? LevelChanged;
@@ -56,6 +61,9 @@ public sealed class DictationPipeline : IDisposable
     public event Action<string>? DictationCompleted;
 
     public event Action<DictationFailure>? DictationFailed;
+
+    /// <summary>Raised when hold exceeded <see cref="DictationPipelineOptions.MaxRecordingDuration"/>.</summary>
+    public event Action<TimeSpan>? RecordingDurationCapped;
 
     public DictationPipeline(
         IHotkeyProvider hotkeys,
@@ -119,7 +127,7 @@ public sealed class DictationPipeline : IDisposable
         // instead. A press during Recording still takes the lock (it is free
         // then) so auto-repeat remains a silent no-op via the state guard.
         if (hotkeyEvent.Kind == HotkeyEventKind.Pressed
-            && _coordinator.State is RecordingState.Processing or RecordingState.InjectionFailed)
+            && _coordinator.State is RecordingState.Processing)
         {
             DictationFailed?.Invoke(new DictationFailure(
                 DictationFailureKind.CaptureFailed,
@@ -175,10 +183,14 @@ public sealed class DictationPipeline : IDisposable
             _sessionTask = sessionTask;
             _forwardingTask = Task.Run(() => ForwardChunksAsync(channel.Reader, sessionTask));
         }
+
+        StartRecordingLimitTimer();
     }
 
     private async Task CompleteAsync()
     {
+        CancelRecordingLimitTimer();
+
         if (!_coordinator.TryTransition(RecordingState.Recording, RecordingState.Processing))
         {
             return;
@@ -202,7 +214,7 @@ public sealed class DictationPipeline : IDisposable
             {
                 // The streaming session opened on key-down must not leak just
                 // because capture teardown failed.
-                DiscardSessionInBackground(sessionTask);
+                DiscardStreamingInBackground(sessionTask, forwardingTask);
                 DictationFailed?.Invoke(new DictationFailure(
                     DictationFailureKind.CaptureFailed, exception.GetBaseException().Message));
                 return;
@@ -215,7 +227,7 @@ public sealed class DictationPipeline : IDisposable
             if (captured.Duration < _options.MinimumDuration
                 || captured.PeakRms < _options.SilencePeakThreshold)
             {
-                DiscardSessionInBackground(sessionTask);
+                DiscardStreamingInBackground(sessionTask, forwardingTask);
                 DictationFailed?.Invoke(new DictationFailure(
                     DictationFailureKind.NoSpeech, "No speech detected."));
                 return;
@@ -304,41 +316,49 @@ public sealed class DictationPipeline : IDisposable
             racers.Add(FinishStreamingAsync(sessionTask, forwardingTask, raceCancellation.Token));
         }
 
+        CancellationTokenSource? batchTimeout = null;
         if (_batch is not null)
         {
-            racers.Add(_batch
-                .TranscribeAsync(captured, raceCancellation.Token)
-                .WaitAsync(_options.BatchTimeout, raceCancellation.Token));
+            batchTimeout = CancellationTokenSource.CreateLinkedTokenSource(raceCancellation.Token);
+            batchTimeout.CancelAfter(_options.BatchTimeout);
+            racers.Add(_batch.TranscribeAsync(captured, batchTimeout.Token));
         }
 
-        var pending = new List<Task<string>>(racers);
-        Exception? lastError = null;
-
-        while (pending.Count > 0)
+        try
         {
-            Task<string> finished = await Task.WhenAny(pending).ConfigureAwait(false);
-            pending.Remove(finished);
+            var pending = new List<Task<string>>(racers);
+            Exception? lastError = null;
 
-            try
+            while (pending.Count > 0)
             {
-                string transcript = await finished.ConfigureAwait(false);
-                if (!string.IsNullOrWhiteSpace(transcript))
+                Task<string> finished = await Task.WhenAny(pending).ConfigureAwait(false);
+                pending.Remove(finished);
+
+                try
                 {
-                    raceCancellation.Cancel();
-                    ObserveInBackground(pending);
-                    return transcript.Trim();
+                    string transcript = await finished.ConfigureAwait(false);
+                    if (!string.IsNullOrWhiteSpace(transcript))
+                    {
+                        raceCancellation.Cancel();
+                        ObserveInBackground(pending);
+                        return transcript.Trim();
+                    }
+                }
+                catch (Exception exception)
+                {
+                    lastError = exception;
                 }
             }
-            catch (Exception exception)
-            {
-                lastError = exception;
-            }
-        }
 
-        DictationFailed?.Invoke(new DictationFailure(
-            DictationFailureKind.TranscriptionFailed,
-            lastError?.GetBaseException().Message ?? "Transcription returned no text."));
-        return null;
+            DictationFailed?.Invoke(new DictationFailure(
+                DictationFailureKind.TranscriptionFailed,
+                lastError?.GetBaseException().Message ?? "Transcription returned no text."));
+            return null;
+        }
+        finally
+        {
+            batchTimeout?.Dispose();
+        }
     }
 
     private async Task<string> FinishStreamingAsync(
@@ -393,6 +413,18 @@ public sealed class DictationPipeline : IDisposable
         }
     }
 
+    private static void DiscardStreamingInBackground(
+        Task<IStreamingSttSession>? sessionTask,
+        Task? forwardingTask)
+    {
+        if (forwardingTask is not null)
+        {
+            ObserveInBackground(new[] { forwardingTask });
+        }
+
+        DiscardSessionInBackground(sessionTask);
+    }
+
     private static void DiscardSessionInBackground(Task<IStreamingSttSession>? sessionTask)
     {
         if (sessionTask is null)
@@ -424,8 +456,61 @@ public sealed class DictationPipeline : IDisposable
         }
     }
 
+    private void StartRecordingLimitTimer()
+    {
+        CancelRecordingLimitTimer();
+
+        _recordingLimitCts = new CancellationTokenSource();
+        CancellationToken token = _recordingLimitCts.Token;
+        TimeSpan limit = _options.MaxRecordingDuration;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(limit, token).ConfigureAwait(false);
+                await AutoStopForRecordingLimitAsync().ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }, token);
+    }
+
+    private void CancelRecordingLimitTimer()
+    {
+        if (_recordingLimitCts is null)
+        {
+            return;
+        }
+
+        _recordingLimitCts.Cancel();
+        _recordingLimitCts.Dispose();
+        _recordingLimitCts = null;
+    }
+
+    private async Task AutoStopForRecordingLimitAsync()
+    {
+        await _sessionLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_coordinator.State != RecordingState.Recording)
+            {
+                return;
+            }
+
+            RecordingDurationCapped?.Invoke(_options.MaxRecordingDuration);
+            await CompleteAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _sessionLock.Release();
+        }
+    }
+
     public void Dispose()
     {
+        CancelRecordingLimitTimer();
         _hotkeys.HotkeyChanged -= OnHotkeyChanged;
         _audio.ChunkAvailable -= OnChunkAvailable;
         _sessionLock.Dispose();

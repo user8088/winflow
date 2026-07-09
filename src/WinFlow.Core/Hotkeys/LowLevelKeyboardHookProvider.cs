@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using WinFlow.Core.Abstractions;
@@ -241,40 +242,50 @@ public sealed class LowLevelKeyboardHookProvider : IHotkeyProvider
 
     private nint HookCallback(int code, nuint wParam, nint lParam)
     {
-        if (code < 0)
+        try
         {
-            return CallNextHookEx(0, code, wParam, lParam);
-        }
-
-        var info = Marshal.PtrToStructure<KbdllHookStruct>(lParam);
-
-        bool isInjected = (info.Flags & LlkhfInjected) != 0;
-        if (info.VkCode != _virtualKey || (isInjected && !_allowInjected))
-        {
-            return CallNextHookEx(0, code, wParam, lParam);
-        }
-
-        switch (wParam)
-        {
-            case WmKeydown or WmSyskeydown:
-                _lastKeyDownTick = Environment.TickCount64;
-                if (!_keyIsDown) // filter auto-repeat
-                {
-                    _keyIsDown = true;
-                    _events.Writer.TryWrite(HotkeyEvent.Pressed());
-                }
-                return 1; // swallow
-
-            case WmKeyup or WmSyskeyup:
-                if (_keyIsDown)
-                {
-                    _keyIsDown = false;
-                    _events.Writer.TryWrite(HotkeyEvent.Released());
-                }
-                return 1; // swallow
-
-            default:
+            if (code < 0)
+            {
                 return CallNextHookEx(0, code, wParam, lParam);
+            }
+
+            var info = Marshal.PtrToStructure<KbdllHookStruct>(lParam);
+
+            bool isInjected = (info.Flags & LlkhfInjected) != 0;
+            if (info.VkCode != _virtualKey || (isInjected && !_allowInjected))
+            {
+                return CallNextHookEx(0, code, wParam, lParam);
+            }
+
+            switch (wParam)
+            {
+                case WmKeydown or WmSyskeydown:
+                    _lastKeyDownTick = Environment.TickCount64;
+                    if (!_keyIsDown) // filter auto-repeat
+                    {
+                        _keyIsDown = true;
+                        _events.Writer.TryWrite(HotkeyEvent.Pressed());
+                    }
+                    return 1; // swallow
+
+                case WmKeyup or WmSyskeyup:
+                    if (_keyIsDown)
+                    {
+                        _keyIsDown = false;
+                        _events.Writer.TryWrite(HotkeyEvent.Released());
+                    }
+                    return 1; // swallow
+
+                default:
+                    return CallNextHookEx(0, code, wParam, lParam);
+            }
+        }
+        catch (Exception exception)
+        {
+            // A managed exception in a native hook callback crashes the process
+            // and breaks the global hook chain; pass through and keep running.
+            Debug.WriteLine($"Keyboard hook callback failed: {exception}");
+            return CallNextHookEx(0, code, wParam, lParam);
         }
     }
 

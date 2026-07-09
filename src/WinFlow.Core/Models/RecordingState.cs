@@ -13,7 +13,4 @@ public enum RecordingState
 
     /// <summary>Hotkey released; audio is being finalized/transcribed.</summary>
     Processing,
-
-    /// <summary>Text was produced but could not be injected into the focused app.</summary>
-    InjectionFailed,
 }

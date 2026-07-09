@@ -4,6 +4,11 @@
 ;   Lite (default):        ~90 MB; models download in-app on first use.
 ;
 ; Build with installer\build.ps1 (stages the publish output and models first).
+;
+; Uninstall cleanup:
+;   - Always removes %APPDATA%\WinFlow (settings.json, recordings).
+;   - Prompts to remove WinFlow/OpenAI from Credential Manager (optional).
+;   - uninstall-cleanup.ps1 deletes the credential when the user accepts.
 
 #ifndef MyAppVersion
   #define MyAppVersion "1.0.0"
@@ -47,6 +52,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "publish\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+Source: "uninstall-cleanup.ps1"; DestDir: "{app}"; Flags: ignoreversion
 ; Models live inside the chosen install dir; the app auto-discovers a
 ; "models" folder next to its exe (LocalModelManager.BundledModelsRoot).
 #ifdef BundleModels
@@ -68,5 +74,44 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}
 
 [UninstallDelete]
 ; Sweep anything the app added under the install dir (e.g. re-downloaded
-; model files); user settings in %LOCALAPPDATA%\WinFlow are kept.
+; model files).
 Type: filesandordirs; Name: "{app}\models"
+; Settings and debug recordings live in %APPDATA%\WinFlow (not the install dir).
+Type: filesandordirs; Name: "{userappdata}\WinFlow"
+
+[Code]
+var
+  RemoveCredential: Boolean;
+
+function InitializeUninstall(): Boolean;
+begin
+  Result := True;
+  if WizardSilent then
+    RemoveCredential := False
+  else
+    RemoveCredential := MsgBox(
+      'WinFlow stores an OpenAI API key in Windows Credential Manager (WinFlow/OpenAI).' + #13#10#13#10 +
+      'Remove the saved API key now?' + #13#10 +
+      '(Settings and recordings in %APPDATA%\WinFlow are always removed.)',
+      mbConfirmation, MB_YESNO) = IDYES;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  if (CurUninstallStep = usUninstall) and RemoveCredential then
+  begin
+    Exec('powershell.exe',
+      '-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File "' +
+      ExpandConstant('{app}\uninstall-cleanup.ps1') + '" -RemoveCredential',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+  if (CurUninstallStep = usPostUninstall) and (not RemoveCredential) and (not WizardSilent) then
+  begin
+    MsgBox(
+      'To finish cleanup, remove WinFlow/OpenAI from' + #13#10 +
+      'Control Panel → Credential Manager → Windows Credentials.',
+      mbInformation, MB_OK);
+  end;
+end;

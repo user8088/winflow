@@ -21,7 +21,7 @@ namespace WinFlow.App;
 ///
 /// Debug environment variables:
 ///   WINFLOW_ALLOW_INJECTED=1   — hotkey reacts to SendInput (automated tests)
-///   WINFLOW_FAKE_STT=1         — offline fake transcriber instead of any real engine
+///   WINFLOW_FAKE_STT=1         — offline fake transcriber and corrector (no network or models)
 ///   WINFLOW_SAVE_RECORDINGS=1  — persist every take as WAV (off by default)
 /// </summary>
 public partial class App : Application
@@ -106,8 +106,14 @@ public partial class App : Application
 
         var correctionMode = new CorrectionModeController(settings.CorrectionMode);
 
-        TranscriptCorrectionService? correctionService = null;
-        if (!fakeStt)
+        TranscriptCorrectionService correctionService;
+        if (fakeStt)
+        {
+            correctionService = new TranscriptCorrectionService(
+                () => correctionMode.Mode,
+                new FakeCorrector());
+        }
+        else
         {
             var cloudCorrector = new OpenAICorrectionClient(credentials.GetApiKey);
             _localCorrection = new LlamaCorrectionEngine(_modelManager);
@@ -126,13 +132,16 @@ public partial class App : Application
         {
             _pipeline.AudioCaptured += captured =>
             {
-                try
+                _ = Task.Run(() =>
                 {
-                    store.Save(captured);
-                }
-                catch
-                {
-                }
+                    try
+                    {
+                        store.Save(captured);
+                    }
+                    catch
+                    {
+                    }
+                });
             };
         }
 
