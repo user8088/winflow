@@ -28,13 +28,41 @@ public partial class ApiKeyDialog : Window
             return;
         }
 
-        _credentials.SetApiKey(key);
+        try
+        {
+            _credentials.SetApiKey(key);
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                $"Could not save the key to Windows Credential Manager.\n\n{exception.Message}",
+                "WinFlow",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            return;
+        }
+
         DialogResult = true;
     }
 
     private void OnRemove(object sender, RoutedEventArgs e)
     {
-        _credentials.DeleteApiKey();
+        try
+        {
+            _credentials.DeleteApiKey();
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                $"Could not remove the key from Windows Credential Manager.\n\n{exception.Message}",
+                "WinFlow",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            return;
+        }
+
         DialogResult = true;
     }
 }

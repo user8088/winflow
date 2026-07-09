@@ -121,10 +121,66 @@ public partial class HudWindow : Window
 
     private void PositionBottomCenter()
     {
-        Rect workArea = SystemParameters.WorkArea;
+        Rect workArea = GetActiveWorkArea();
         Left = workArea.Left + (workArea.Width - Width) / 2;
         Top = workArea.Bottom - Height - 28;
         StatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xE8, 0xEA, 0xED));
+    }
+
+    /// <summary>
+    /// Work area (in WPF device-independent units) of the monitor hosting the
+    /// foreground window — i.e. the app being dictated into — falling back to
+    /// the cursor's monitor, then the primary work area.
+    /// </summary>
+    private Rect GetActiveWorkArea()
+    {
+        nint monitor = 0;
+        nint foreground = GetForegroundWindow();
+        if (foreground != 0)
+        {
+            monitor = MonitorFromWindow(foreground, MonitorDefaultToNearest);
+        }
+
+        if (monitor == 0 && GetCursorPos(out NativePoint cursor))
+        {
+            monitor = MonitorFromPoint(cursor, MonitorDefaultToNearest);
+        }
+
+        if (monitor != 0)
+        {
+            var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+            if (GetMonitorInfoW(monitor, ref info))
+            {
+                return PixelsToDips(info.WorkArea);
+            }
+        }
+
+        return SystemParameters.WorkArea;
+    }
+
+    /// <summary>
+    /// Converts a native pixel rect into DIPs. The app has no manifest, so the
+    /// process is system-DPI-aware: Win32 coordinates are already virtualized
+    /// to the single system DPI, and one uniform scale applies everywhere.
+    /// </summary>
+    private Rect PixelsToDips(NativeRect rect)
+    {
+        if (PresentationSource.FromVisual(this)?.CompositionTarget is { } target)
+        {
+            Matrix fromDevice = target.TransformFromDevice;
+            Point topLeft = fromDevice.Transform(new Point(rect.Left, rect.Top));
+            Point bottomRight = fromDevice.Transform(new Point(rect.Right, rect.Bottom));
+            return new Rect(topLeft, bottomRight);
+        }
+
+        // No HWND yet (called before the window is first shown); GetDpi still
+        // reports the system DPI scale, which is the correct divisor here.
+        DpiScale dpi = VisualTreeHelper.GetDpi(this);
+        return new Rect(
+            rect.Left / dpi.DpiScaleX,
+            rect.Top / dpi.DpiScaleY,
+            (rect.Right - rect.Left) / dpi.DpiScaleX,
+            (rect.Bottom - rect.Top) / dpi.DpiScaleY);
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -140,10 +196,51 @@ public partial class HudWindow : Window
     private const int WsExNoactivate = 0x08000000;
     private const int WsExTransparent = 0x00000020;
     private const int WsExToolwindow = 0x00000080;
+    private const uint MonitorDefaultToNearest = 2;
 
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(nint hWnd, int index);
 
     [DllImport("user32.dll")]
     private static extern int SetWindowLong(nint hWnd, int index, int newStyle);
+
+    [DllImport("user32.dll")]
+    private static extern nint GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern nint MonitorFromWindow(nint hWnd, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern nint MonitorFromPoint(NativePoint pt, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out NativePoint pt);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool GetMonitorInfoW(nint hMonitor, ref MonitorInfo info);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo
+    {
+        public int Size;
+        public NativeRect MonitorArea;
+        public NativeRect WorkArea;
+        public uint Flags;
+    }
 }

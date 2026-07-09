@@ -36,6 +36,18 @@ public static class ClipboardHelper
     private const uint CfGdiObjFirst = 0x0300;  // GDI object handles, not HGLOBAL
     private const uint CfGdiObjLast = 0x03FF;
 
+    // Registered formats that keep a transcript out of Clipboard History
+    // (Win+V) and Cloud Clipboard sync: the monitor format's mere presence
+    // suppresses third-party monitors, and the other two are DWORD-0 flags
+    // read by the Windows history/cloud services. A value of 0 means
+    // registration failed and that format is skipped (best-effort).
+    private static readonly uint ExcludeFromMonitorFormat =
+        RegisterClipboardFormat("ExcludeClipboardContentFromMonitorProcessing");
+    private static readonly uint CanIncludeInHistoryFormat =
+        RegisterClipboardFormat("CanIncludeInClipboardHistory");
+    private static readonly uint CanUploadToCloudFormat =
+        RegisterClipboardFormat("CanUploadToCloudClipboard");
+
     /// <summary>
     /// Copies every duplicable clipboard format into process memory so it can
     /// be restored after paste injection. Returns null when the clipboard
@@ -201,7 +213,16 @@ public static class ClipboardHelper
         }
     }
 
-    public static void SetText(string text)
+    /// <summary>
+    /// Places transcript text on the clipboard, flagged so it never enters
+    /// Clipboard History (Win+V) or Cloud Clipboard sync. The write is
+    /// transactional: every HGLOBAL is allocated and populated before
+    /// EmptyClipboard runs, so a failure up to that point leaves the
+    /// clipboard untouched. Returns the clipboard sequence number observed
+    /// after the write (while the clipboard is still held open, so it is
+    /// race-free) for later staleness checks before restoring.
+    /// </summary>
+    public static uint SetText(string text)
     {
         if (!OpenWithRetry())
         {
@@ -210,46 +231,134 @@ public static class ClipboardHelper
 
         try
         {
-            if (!EmptyClipboard())
+            // CF_UNICODETEXT first so a SetClipboardData failure on it aborts
+            // before any exclusion flag is written.
+            var pending = new List<(uint Format, nint Handle)>
             {
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "EmptyClipboard failed");
-            }
-
-            int bytes = (text.Length + 1) * 2;
-            nint handle = GlobalAlloc(GmemMoveable, (nuint)bytes);
-            if (handle == 0)
-            {
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "GlobalAlloc failed");
-            }
-
-            nint pointer = GlobalLock(handle);
-            if (pointer == 0)
-            {
-                GlobalFree(handle);
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "GlobalLock failed");
-            }
+                (CfUnicodeText, AllocTextHandle(text)),
+            };
 
             try
             {
-                Marshal.Copy(text.ToCharArray(), 0, pointer, text.Length);
-                Marshal.WriteInt16(pointer, text.Length * 2, 0); // null terminator
+                foreach (uint format in new[]
+                         {
+                             ExcludeFromMonitorFormat,
+                             CanIncludeInHistoryFormat,
+                             CanUploadToCloudFormat,
+                         })
+                {
+                    if (format != 0)
+                    {
+                        pending.Add((format, AllocDwordHandle(0)));
+                    }
+                }
+
+                if (!EmptyClipboard())
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "EmptyClipboard failed");
+                }
+
+                for (int i = 0; i < pending.Count; i++)
+                {
+                    (uint format, nint handle) = pending[i];
+                    if (SetClipboardData(format, handle) != 0)
+                    {
+                        // Ownership only transfers to the system on success.
+                        pending[i] = (format, 0);
+                    }
+                    else if (format == CfUnicodeText)
+                    {
+                        throw new Win32Exception(Marshal.GetLastWin32Error(), "SetClipboardData failed");
+                    }
+                    // Exclusion flags are best-effort; a failed one is freed below.
+                }
             }
             finally
             {
-                GlobalUnlock(handle);
+                foreach ((_, nint handle) in pending)
+                {
+                    if (handle != 0)
+                    {
+                        GlobalFree(handle);
+                    }
+                }
             }
 
-            if (SetClipboardData(CfUnicodeText, handle) == 0)
-            {
-                // Ownership only transfers to the system on success.
-                GlobalFree(handle);
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "SetClipboardData failed");
-            }
+            return GetClipboardSequenceNumber();
         }
         finally
         {
             CloseClipboard();
         }
+    }
+
+    /// <summary>
+    /// Current clipboard sequence number; Windows bumps it on every clipboard
+    /// write, so an unchanged value means nobody has touched the clipboard.
+    /// </summary>
+    public static uint GetSequenceNumber() => GetClipboardSequenceNumber();
+
+    /// <summary>
+    /// Best-effort clear, used to return the clipboard to its pre-injection
+    /// empty state instead of leaving a transcript behind.
+    /// </summary>
+    public static bool TryClear()
+    {
+        if (!OpenWithRetry())
+        {
+            return false;
+        }
+
+        try
+        {
+            return EmptyClipboard();
+        }
+        finally
+        {
+            CloseClipboard();
+        }
+    }
+
+    private static nint AllocTextHandle(string text)
+    {
+        int bytes = (text.Length + 1) * 2;
+        nint handle = AllocLockedCopy((nuint)bytes, pointer =>
+        {
+            Marshal.Copy(text.ToCharArray(), 0, pointer, text.Length);
+            Marshal.WriteInt16(pointer, text.Length * 2, 0); // null terminator
+        });
+        return handle;
+    }
+
+    private static nint AllocDwordHandle(uint value) =>
+        AllocLockedCopy(sizeof(uint), pointer => Marshal.WriteInt32(pointer, (int)value));
+
+    private static nint AllocLockedCopy(nuint bytes, Action<nint> populate)
+    {
+        nint handle = GlobalAlloc(GmemMoveable, bytes);
+        if (handle == 0)
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "GlobalAlloc failed");
+        }
+
+        nint pointer = GlobalLock(handle);
+        if (pointer == 0)
+        {
+            int error = Marshal.GetLastWin32Error();
+            GlobalFree(handle);
+            throw new Win32Exception(error, "GlobalLock failed");
+        }
+
+        try
+        {
+            populate(pointer);
+        }
+        finally
+        {
+            GlobalUnlock(handle);
+        }
+
+        return handle;
     }
 
     private static bool OpenWithRetry()
@@ -284,6 +393,12 @@ public static class ClipboardHelper
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern nint SetClipboardData(uint format, nint data);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern uint RegisterClipboardFormat(string formatName);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetClipboardSequenceNumber();
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern nint GlobalAlloc(uint flags, nuint bytes);

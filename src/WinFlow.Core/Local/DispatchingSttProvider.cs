@@ -21,19 +21,38 @@ public sealed class SttModeController
         _localAvailable = localAvailable;
     }
 
-    public SttMode ConfiguredMode
-    {
-        get => _mode;
-        set => _mode = value;
-    }
+    /// <summary>
+    /// The mode the user chose. Mutations go through <see cref="Apply"/> so
+    /// that <see cref="BackendChanged"/> fires when the resolution flips.
+    /// </summary>
+    public SttMode ConfiguredMode => _mode;
 
     /// <summary>The effective provider backend after resolving Auto.</summary>
     public SttBackend ResolvedBackend => _mode switch
     {
         SttMode.Cloud => SttBackend.Cloud,
         SttMode.Local => SttBackend.Local,
-        _ => _localAvailable() ? SttBackend.Local : SttBackend.Cloud,
+        _ => ResolveAuto(),
     };
+
+    private SttBackend ResolveAuto()
+    {
+        if (_localAvailable())
+        {
+            return SttBackend.Local;
+        }
+
+        if (_cloudAvailable())
+        {
+            return SttBackend.Cloud;
+        }
+
+        // Neither backend is usable (no model, no API key). SttBackend has no
+        // 'none' value, so keep the historical Cloud fallback: the dictation
+        // attempt fails with a visible toast instead of routing to a missing
+        // local model.
+        return SttBackend.Cloud;
+    }
 
     public event Action<SttBackend>? BackendChanged;
 

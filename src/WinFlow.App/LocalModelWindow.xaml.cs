@@ -67,12 +67,13 @@ public partial class LocalModelWindow : Window
 
     private string DriveSummary()
     {
-        double needMb = _model.TotalBytes / (1024.0 * 1024.0);
+        long remaining = _manager.GetRemainingBytes(_model);
+        double needMb = remaining / (1024.0 * 1024.0);
         long? free = _manager.GetAvailableBytes();
         if (free is long f)
         {
             double freeMb = f / (1024.0 * 1024.0);
-            string note = f < _model.TotalBytes ? "  — NOT ENOUGH SPACE on this drive" : "";
+            string note = f < remaining ? "  — NOT ENOUGH SPACE on this drive" : "";
             return $"Free here: {freeMb:F0} MB · needs ~{needMb:F0} MB{note}";
         }
 
@@ -117,7 +118,7 @@ public partial class LocalModelWindow : Window
             return;
         }
 
-        if (_manager.GetAvailableBytes() is long free && free < _model.TotalBytes)
+        if (_manager.GetAvailableBytes() is long free && free < _manager.GetRemainingBytes(_model))
         {
             MessageBox.Show(
                 this,

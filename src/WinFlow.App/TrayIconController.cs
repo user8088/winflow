@@ -127,8 +127,19 @@ public sealed class TrayIconController : IDisposable
         var openRecordings = new MenuItem { Header = "Open recordings folder" };
         openRecordings.Click += (_, _) =>
         {
-            Directory.CreateDirectory(store.RecordingsDirectory);
-            Process.Start(new ProcessStartInfo(store.RecordingsDirectory) { UseShellExecute = true });
+            try
+            {
+                Directory.CreateDirectory(store.RecordingsDirectory);
+                Process.Start(new ProcessStartInfo(store.RecordingsDirectory) { UseShellExecute = true });
+            }
+            catch (Exception exception)
+            {
+                MessageBox.Show(
+                    $"Could not open the recordings folder.\n\n{exception.Message}",
+                    "WinFlow",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
         };
         menu.Items.Add(openRecordings);
 
@@ -201,6 +212,7 @@ public sealed class TrayIconController : IDisposable
         }
 
         _mode.Apply(mode);
+        _settingsStore.Update(s => s with { SttMode = mode });
         RefreshModeChecks();
         UpdateState(RecordingState.Idle);
     }

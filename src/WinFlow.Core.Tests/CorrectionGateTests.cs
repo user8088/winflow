@@ -9,6 +9,8 @@ public class CorrectionGateTests
     [InlineData("Hello world.")]
     [InlineData("Please send the report by Friday.")]
     [InlineData("OK")]
+    [InlineData("I like pizza.")]
+    [InlineData("I actually agree.")]
     public void CleanTranscriptSkipsCorrection(string transcript)
     {
         Assert.False(CorrectionGate.NeedsCorrection(transcript));
@@ -20,6 +22,7 @@ public class CorrectionGateTests
     [InlineData("no wait I mean the other file")]
     [InlineData("the the report is ready")]
     [InlineData("I went to the the store yesterday um")]
+    [InlineData("um so like I was thinking no wait scratch that")]
     public void MessyTranscriptNeedsCorrection(string transcript)
     {
         Assert.True(CorrectionGate.NeedsCorrection(transcript));

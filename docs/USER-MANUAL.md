@@ -112,6 +112,28 @@ Right-click tray icon → **Transcription mode**:
 
 The tray icon is **green** when local mode is the active backend.
 
+### Input method
+
+Right-click tray icon → **Input method**:
+
+| Mode | Behavior |
+|------|----------|
+| **Auto (detect terminals)** | Pastes in most apps; types character-by-character in terminals and Electron apps (Cursor, VS Code) where synthetic paste fails |
+| **Paste (Ctrl+V)** | Clipboard + synthetic Ctrl+V. Fast; may fail in some terminals |
+| **Type (best for terminals/Cursor)** | SendInput Unicode keystrokes. Slower but reliable in terminals |
+
+### Transcript correction
+
+Right-click tray icon → **Transcript correction**:
+
+| Mode | Behavior |
+|------|----------|
+| **Off (verbatim)** | Inject the raw STT transcript unchanged |
+| **Auto-correct** | Fix messy or incomplete transcripts; skip already-clean takes |
+| **Aggressive** | Always run correction, including stronger completion for broken English |
+
+Cloud mode uses OpenAI; local mode uses an optional on-device correction model (download via **Correction model…**).
+
 ### Open recordings folder
 
 If you enabled debug recording (see [Advanced](#advanced-options)), completed takes are saved as WAV files. Open them via:
@@ -192,7 +214,9 @@ Example:
   "sttMode": "Auto",
   "nearFieldMic": true,
   "language": null,
-  "modelDirectory": null
+  "modelDirectory": null,
+  "inputMethod": "Auto",
+  "correctionMode": "AutoCorrect"
 }
 ```
 
@@ -202,6 +226,8 @@ Example:
 | `nearFieldMic` | `true` / `false` | `true` for headsets; `false` for laptop built-in mics (cloud noise reduction) |
 | `language` | e.g. `"en"` or `null` | Reserved for future language selection |
 | `modelDirectory` | path or `null` | Custom offline model install root |
+| `inputMethod` | `Auto`, `Paste`, `Type` | How text is delivered to the focused app (see [Input method](#input-method)) |
+| `correctionMode` | `Off`, `AutoCorrect`, `Aggressive` | Transcript cleanup before injection (see [Transcript correction](#transcript-correction)) |
 
 You can edit this file while WinFlow is closed. Most users should use the tray menu instead.
 

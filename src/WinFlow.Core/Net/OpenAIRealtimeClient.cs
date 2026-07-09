@@ -46,10 +46,21 @@ public sealed class OpenAIRealtimeClient : IStreamingSttProvider, IDisposable
     {
         ClientWebSocket socket = TakeFreshBackup() ?? await ConnectAsync(cancellationToken).ConfigureAwait(false);
 
-        string sessionUpdate = RealtimeProtocol.BuildSessionUpdate(_sttModel, language: null, _nearFieldMic);
-        await SendTextAsync(socket, sessionUpdate, cancellationToken).ConfigureAwait(false);
+        // Until the Session below takes ownership, any failure (e.g. the
+        // session.update send hitting a half-closed backup socket) must
+        // dispose the socket here or it leaks.
+        try
+        {
+            string sessionUpdate = RealtimeProtocol.BuildSessionUpdate(_sttModel, language: null, _nearFieldMic);
+            await SendTextAsync(socket, sessionUpdate, cancellationToken).ConfigureAwait(false);
 
-        return new Session(this, socket);
+            return new Session(this, socket);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
     }
 
     /// <summary>Pre-opens the next connection so the next dictation skips the handshake.</summary>
