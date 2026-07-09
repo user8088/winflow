@@ -482,7 +482,9 @@ $RECYCLE.BIN/
 *.swp
 
 # Local on-device model store (WINFLOW_MODELS_DIR)
-models/
+# Root-anchored: a bare "models/" also matched src/WinFlow.Core/Models/ on
+# case-insensitive filesystems, silently ignoring source files.
+/models/
 
 # Installer build artifacts
 installer/publish/
