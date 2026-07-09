@@ -1,14 +1,16 @@
 namespace WinFlow.Core.Models;
 
-/// <summary>How the finished transcript is delivered into the focused app.</summary>
+/// <summary>How finished text is delivered to the focused application.</summary>
 public enum InputMethod
 {
-    /// <summary>Copy to clipboard and send Ctrl+V. Fast; best for editors and browsers.</summary>
+    /// <summary>Pick per target: type into terminals/Electron, paste elsewhere.</summary>
+    Auto,
+
+    /// <summary>Clipboard + synthetic Ctrl+V. Fast, preserves formatting, but
+    /// unreliable in Electron terminals (Cursor, VS Code) and some consoles.</summary>
     Paste,
 
-    /// <summary>Synthesize per-character keystrokes. Best for terminals and apps that filter paste.</summary>
+    /// <summary>Type each character via SendInput Unicode keystrokes. Slower
+    /// but works in terminals/Electron where synthetic paste fails.</summary>
     Type,
-
-    /// <summary>Detect terminal-like targets and type into them; paste everywhere else.</summary>
-    Auto,
 }
